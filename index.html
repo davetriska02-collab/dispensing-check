@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dispensing Check</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">Dispensing<span class="dot">·</span>Check<small id="practiceName">UK dispensing margin tool</small></div>
+      <div class="topbar-spacer"></div>
+      <div class="seg" id="roleSeg" title="Switch view">
+        <button data-role="partner">Partner / manager</button>
+        <button data-role="prescriber">Prescriber</button>
+      </div>
+      <button class="icon-btn" id="themeBtn" title="Toggle light / dark">◐</button>
+    </header>
+
+    <div class="layout">
+      <nav class="nav" id="nav"></nav>
+      <main class="content" id="content"></main>
+    </div>
+
+    <div id="modalRoot"></div>
+
+    <script src="engine.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
