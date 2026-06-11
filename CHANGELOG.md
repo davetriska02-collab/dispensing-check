@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.1.0 — 2026-06-11
+
+Tariff intelligence: the app stops arriving empty. Public data in, action
+lists out. Still zero dependencies, still fully offline.
+
+### Added
+
+- **Drug Tariff import** — import the NHSBSA Part VIII price list as CSV or
+  XLSX (the XLSX reader is hand-rolled: ZIP parsing plus the browser-native
+  DecompressionStream, no libraries). Column auto-detection with a manual
+  mapping fallback, pence/pounds handling, live preview, and a
+  confirm-before-apply match review with exact/strong/weak confidence
+  badges. The full tariff dataset is stored on-device in IndexedDB for
+  matching products added later; the ledger shows the tariff month.
+- **Price concessions (NCSO)** — paste or import the monthly concession
+  list; matched lines use the concession price in every margin calculation,
+  carry an NCSO flag in the ledger, and clear with one click. Backups
+  preserve concession prices.
+- **Switch-list export** — the recommended supplier switches as a printable
+  sheet grouped by target wholesaler (with subtotals) and as CSV.
+- **Data & IG page** — an in-app information governance statement: what is
+  stored, what never is (no patient data), where it lives, and how to verify
+  the zero-network claim in DevTools. Summarised in the README.
+- `importers.js`: a pure, tested import engine (XLSX/CSV parsing, column
+  detection, name normalisation, product matching, concession parsing) with
+  68 tests including an in-test XLSX fixture. 128 tests total.
+
+### Changed
+
+- The engine honours a `concessionPrice` on a product, exposing
+  `tariffBase` and `onConcession` in metrics; loss-makers are recomputed at
+  concession prices.
+- README no longer names a comparator product that could not be verified to
+  exist.
+
 ## v1.0.0 — 2026-06-11
 
 First stable release of Dispensing Check: an offline margin ledger and

@@ -15,7 +15,94 @@
     textSize: 'dc.textSize',
     density: 'dc.density',
     accent: 'dc.accent',
+    tariffMonth: 'dc.tariffMonth',
+    concessions: 'dc.concessions',
   };
+
+  const I = window.DispensingImporters;
+
+  // ── IndexedDB tariff store ──
+  // db 'dispensingCheck' v1, stores: 'tariff' (keyPath 'key'), 'meta'
+  let _idb = null;
+  function openIdb() {
+    if (_idb) return Promise.resolve(_idb);
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) { resolve(null); return; }
+      const req = window.indexedDB.open('dispensingCheck', 1);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('tariff')) {
+          db.createObjectStore('tariff', { keyPath: 'key' });
+        }
+        if (!db.objectStoreNames.contains('meta')) {
+          db.createObjectStore('meta', { keyPath: 'id' });
+        }
+      };
+      req.onsuccess = (e) => { _idb = e.target.result; resolve(_idb); };
+      req.onerror = () => { resolve(null); };
+    });
+  }
+
+  function idbPutTariff(rows, monthLabel) {
+    return openIdb().then((db) => {
+      if (!db) { console.info('IndexedDB not available — tariff reference set not persisted.'); return; }
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(['tariff', 'meta'], 'readwrite');
+        const store = tx.objectStore('tariff');
+        const meta = tx.objectStore('meta');
+        // Clear existing tariff rows
+        store.clear();
+        for (const row of rows) {
+          const key = I.normaliseName((row.name || '') + ' ' + (row.pack || ''));
+          store.put({ key, name: row.name, pack: row.pack, price: row.price });
+        }
+        meta.put({ id: 'tariff', month: monthLabel, importedAt: new Date().toISOString(), count: rows.length });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    });
+  }
+
+  function idbTariffMeta() {
+    return openIdb().then((db) => {
+      if (!db) return null;
+      return new Promise((resolve) => {
+        const tx = db.transaction('meta', 'readonly');
+        const req = tx.objectStore('meta').get('tariff');
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      });
+    });
+  }
+
+  function idbAllTariff() {
+    return openIdb().then((db) => {
+      if (!db) return [];
+      return new Promise((resolve) => {
+        const tx = db.transaction('tariff', 'readonly');
+        const req = tx.objectStore('tariff').getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => resolve([]);
+      });
+    });
+  }
+
+  // ── format YYYY-MM as "May 2026" ──
+  function fmtYearMonth(ym) {
+    if (!ym) return '';
+    const parts = ym.split('-');
+    const yr = parts[0] || '';
+    const mo = parseInt(parts[1], 10) || 0;
+    const months = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const mName = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    return (mName[mo] || months[mo] || '') + ' ' + yr;
+  }
+
+  // ── current month as YYYY-MM ──
+  function currentYearMonth() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  }
 
   const state = {
     products: load(KEYS.products, []),
@@ -835,9 +922,20 @@
     const sorted = applyLedgerSort(filtered);
     const bd = E.categoryBreakdown(state.products, state.config);
 
+    const tariffMonth = localStorage.getItem(KEYS.tariffMonth);
+    const concessionsRaw = localStorage.getItem(KEYS.concessions);
+    let subExtra = '';
+    if (tariffMonth) subExtra += ' · Tariff: ' + esc(fmtYearMonth(tariffMonth));
+    if (concessionsRaw) {
+      try {
+        const cd = JSON.parse(concessionsRaw);
+        if (cd && cd.month) subExtra += ' · NCSO: ' + esc(fmtYearMonth(cd.month)) + ' (' + esc(String(cd.count || 0)) + ' lines)';
+      } catch (_) {}
+    }
+
     content.innerHTML = `
       <h1>Margin ledger</h1>
-      <p class="sub">${esc(rate)} · ${t.pricedCount}/${t.productCount} products priced</p>
+      <p class="sub">${esc(rate)} · ${t.pricedCount}/${t.productCount} products priced${subExtra}</p>
       <div class="btn-row">
         <button class="btn btn-primary" data-a="add">+ Product</button>
         ${t.switchableCount ? `<button class="btn" data-a="switchall">Switch all &rarr; save ${gbp0(t.switchSavingMonthly)}/mo</button><button class="btn" data-a="switchlistprint">Switch list</button><button class="btn" data-a="switchlistcsv">Switch CSV</button>` : ''}
@@ -937,6 +1035,7 @@
         const flags = [];
         if (m.lossMaker) flags.push('<span class="flag loss">LOSS</span>');
         if (m.switchable) flags.push('<span class="flag switch">SWITCH</span>');
+        if (m.onConcession) flags.push('<span class="flag ncso">NCSO</span>');
         const chips = (p.suppliers || [])
           .map((s) => {
             const sp = E.priceValue(s.price);
@@ -946,9 +1045,13 @@
           })
           .join('');
         const mc = m.marginPerPackCurrent == null ? '' : m.marginPerPackCurrent < 0 ? 'neg' : 'pos';
+        let metaPriceLine = '';
+        if (m.onConcession && m.tariff != null && m.tariffBase != null) {
+          metaPriceLine = ' · concession ' + gbp(m.tariff) + ' (tariff ' + gbp(m.tariffBase) + ')';
+        }
         return `<tr class="${m.lossMaker ? 'row-loss' : ''}">
           <td><div class="name">${esc(p.name) || '<em>unnamed</em>'}</div>
-            <div class="meta">${esc(p.pack ? 'pack ' + p.pack : '')} · ${esc(catLabel(p.category))} · clawback ${(m.rate * 100).toFixed(2)}%${m.costPerUnit != null ? ' · ' + gbp(m.costPerUnit) + '/unit' : ''}</div>
+            <div class="meta">${esc(p.pack ? 'pack ' + p.pack : '')} · ${esc(catLabel(p.category))} · clawback ${(m.rate * 100).toFixed(2)}%${m.costPerUnit != null ? ' · ' + gbp(m.costPerUnit) + '/unit' : ''}${metaPriceLine}</div>
             <div class="chips">${chips || '<span class="meta">no supplier price</span>'}</div></td>
           <td class="num">${m.tariff ? gbp(m.tariff) : '—'}</td>
           <td class="num">${m.tariff ? gbp(m.netReimb) : '—'}</td>
@@ -1209,7 +1312,7 @@
             price: isFinite(Number(s.price)) ? Number(s.price) : '',
           }))
         : [];
-      return {
+      const out = {
         id: typeof x.id === 'string' && x.id ? x.id : E.makeId(),
         name: typeof x.name === 'string' ? x.name : '',
         pack: typeof x.pack === 'string' ? x.pack : '',
@@ -1219,6 +1322,8 @@
         suppliers,
         currentSupplier: typeof x.currentSupplier === 'string' ? x.currentSupplier : null,
       };
+      if (isFinite(Number(x.concessionPrice)) && Number(x.concessionPrice) > 0) out.concessionPrice = Number(x.concessionPrice);
+      return out;
     });
   }
   function sanitiseFormulary(raw) {
@@ -1244,9 +1349,53 @@
 
   // ── DATA (import / export) ──
   function renderData() {
+    const tariffMonthVal = localStorage.getItem(KEYS.tariffMonth) || '';
+    const tariffMetaNote = tariffMonthVal
+      ? `<p class="note" style="margin-top:6px">Current tariff: <strong>${esc(fmtYearMonth(tariffMonthVal))}</strong>. Import a new file to update.</p>`
+      : '';
+    const matchTariffBtn = tariffMonthVal
+      ? `<button class="btn" data-a="matchtariff">Match tariff to products</button>`
+      : '';
+
+    const concessionsRaw = localStorage.getItem(KEYS.concessions);
+    let ncsoNote = '';
+    if (concessionsRaw) {
+      try {
+        const cd = JSON.parse(concessionsRaw);
+        if (cd && cd.month) ncsoNote = `<p class="note" style="margin-top:6px">Current concessions: <strong>${esc(fmtYearMonth(cd.month))}</strong> (${esc(String(cd.count || 0))} lines applied). Import a new month to replace.</p>`;
+      } catch (_) {}
+    }
+
     content.innerHTML = `
       <h1>Import / export</h1>
       <p class="sub">CSV for price lists · JSON for a full backup (products, formulary, settings, history)</p>
+
+      <div class="panel" id="tariffPanel"><h3>Drug Tariff (NHSBSA)</h3><div class="pad">
+        <p class="note">Download the Part VIII price list from the NHSBSA website, then import the file here (CSV or XLSX). Data stays on this device only.</p>
+        ${tariffMetaNote}
+        <div class="btn-row" style="margin-top:10px">
+          <button class="btn btn-primary" data-a="imptariff">Import tariff file</button>
+          ${matchTariffBtn}
+        </div>
+        <input type="file" id="ftariff" accept=".csv,.xlsx" style="display:none" />
+      </div></div>
+
+      <div class="panel" id="ncsoPanel"><h3>Price concessions (NCSO)</h3><div class="pad">
+        <p class="note">Paste the current month's concession list (from the DHSC/CPE publication) or import it as CSV. Concession prices override the tariff for margin calculations and are cleared when you import a new month.</p>
+        ${ncsoNote}
+        <label class="field" style="margin-top:8px"><span>Paste concession list</span><textarea id="ncsoText" rows="5" placeholder="Paste lines here, or use Import file below…"></textarea></label>
+        <div class="field-row">
+          <label class="field"><span>Month</span><input type="month" id="ncsoMonth" value="${esc(currentYearMonth())}" /></label>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" data-a="applyNcso">Apply concessions</button>
+          <button class="btn" data-a="impncso">Import file (CSV)</button>
+          <button class="btn" data-a="clearNcso">Clear concessions</button>
+        </div>
+        <input type="file" id="fncso" accept=".csv,text/csv" style="display:none" />
+        <p class="note" id="ncsoResult" style="margin-top:6px"></p>
+      </div></div>
+
       <div class="panel"><h3>Price list (CSV)</h3><div class="pad">
         <p class="note">Columns: <code>${esc(E.CSV_HEADER)}</code>. Rows sharing name+pack group into one product. Empty price = unpriced.</p>
         <div class="btn-row"><button class="btn" data-a="impcsv">Import CSV</button><button class="btn" data-a="expcsv">Export CSV</button></div>
@@ -1258,7 +1407,76 @@
       </div></div>
       <input type="file" id="fcsv" accept=".csv,text/csv" style="display:none" />
       <input type="file" id="fjson" accept=".json,application/json" style="display:none" />`;
+
     const fcsv = $('#fcsv'), fjson = $('#fjson');
+    const ftariff = $('#ftariff'), fncso = $('#fncso');
+
+    // ── Drug Tariff import ──
+    bindMaybe('[data-a="imptariff"]', () => ftariff.click());
+    bindMaybe('[data-a="matchtariff"]', () => {
+      idbAllTariff().then((tariffRows) => {
+        if (!tariffRows.length) { alert('No tariff data stored. Import a tariff file first.'); return; }
+        if (!state.products.length) { alert('No products to match against. Add products first.'); return; }
+        const proposals = I.matchRows(state.products, tariffRows);
+        openMatchReviewModal(proposals, tariffRows, localStorage.getItem(KEYS.tariffMonth) || '');
+      });
+    });
+
+    ftariff.addEventListener('change', async (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      e.target.value = '';
+      try {
+        let grid;
+        if (f.name.toLowerCase().endsWith('.xlsx')) {
+          const buf = await f.arrayBuffer();
+          grid = await I.parseXlsx(buf);
+        } else {
+          const text = await f.text();
+          grid = I.gridFromCsv(text);
+        }
+        if (!grid || !grid.length) { alert('No data found in that file.'); return; }
+        openTariffMappingModal(grid, f.name);
+      } catch (err) {
+        alert('Could not read that file: ' + esc(err.message));
+      }
+    });
+
+    // ── NCSO import ──
+    bindMaybe('[data-a="impncso"]', () => fncso.click());
+    bindMaybe('[data-a="applyNcso"]', () => {
+      const text = ($('#ncsoText') || {}).value || '';
+      const month = ($('#ncsoMonth') || {}).value || currentYearMonth();
+      applyNcsoText(text, month);
+    });
+    bindMaybe('[data-a="clearNcso"]', () => {
+      if (!confirm('Clear all concession prices from products?')) return;
+      state.products = state.products.map((p) => {
+        const copy = Object.assign({}, p);
+        delete copy.concessionPrice;
+        return copy;
+      });
+      save(KEYS.products, state.products);
+      localStorage.removeItem(KEYS.concessions);
+      render();
+    });
+
+    fncso.addEventListener('change', async (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      e.target.value = '';
+      try {
+        const text = await f.text();
+        const ta = $('#ncsoText');
+        if (ta) ta.value = text;
+        const month = ($('#ncsoMonth') || {}).value || currentYearMonth();
+        applyNcsoText(text, month);
+      } catch (err) {
+        alert('Could not read that file: ' + esc(err.message));
+      }
+    });
+
+    // ── Price list CSV ──
     bindMaybe('[data-a="impcsv"]', () => fcsv.click());
     bindMaybe('[data-a="expcsv"]', () => download(E.toCsv(state.products), `dispensing-margin-${today()}.csv`, 'text/csv'));
     bindMaybe('[data-a="impjson"]', () => fjson.click());
@@ -1309,6 +1527,230 @@
       }
       e.target.value = '';
     });
+  }
+
+  // ── Drug Tariff: column mapping modal ──
+  function openTariffMappingModal(grid, fileName) {
+    const headerRow = grid[0] || [];
+    const detected = I.detectColumns(headerRow, 'tariff');
+    const colOpts = (sel) => headerRow.map((h, i) =>
+      `<option value="${i}" ${sel === i ? 'selected' : ''}>${esc(h || '(col ' + (i + 1) + ')')}</option>`
+    ).join('');
+    const noneOpt = '<option value="">-- none --</option>';
+
+    function buildPreview(mapping) {
+      const rows = I.extractRows(grid, mapping).slice(0, 5);
+      if (!rows.length) return '<p class="note">No rows extracted with current settings.</p>';
+      return `<table class="modal-import-table"><thead><tr><th>Name</th><th>Pack</th><th class="num">Price</th></tr></thead><tbody>${
+        rows.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.pack)}</td><td class="num">${esc('£' + (r.price || 0).toFixed(2))}</td></tr>`).join('')
+      }</tbody></table>`;
+    }
+
+    const bodyId = 'tariffMapBody';
+    const bodyHtml = `
+      <p class="note" style="margin-bottom:10px">File: <strong>${esc(fileName)}</strong> — ${esc(String(grid.length - 1))} data rows detected.</p>
+      <div class="field-row">
+        <label class="field"><span>Name column</span><select id="tm_name">${noneOpt}${colOpts(detected.name)}</select></label>
+        <label class="field"><span>Pack column</span><select id="tm_pack">${noneOpt}${colOpts(detected.pack)}</select></label>
+        <label class="field"><span>Price column</span><select id="tm_price">${noneOpt}${colOpts(detected.price)}</select></label>
+      </div>
+      <div class="field-row">
+        <label class="field" style="flex-direction:row;align-items:center;gap:8px;margin-bottom:0">
+          <input type="checkbox" id="tm_pence" ${detected.pence ? 'checked' : ''} style="width:auto;padding:0" />
+          <span>Prices are in pence</span>
+        </label>
+        <label class="field"><span>Month</span><input type="month" id="tm_month" value="${esc(currentYearMonth())}" /></label>
+      </div>
+      <div id="tm_preview" style="margin-top:10px;max-height:160px;overflow-y:auto">${buildPreview({ name: detected.name, pack: detected.pack, price: detected.price, pence: detected.pence, headerRows: 1 })}</div>`;
+
+    const host = openModal('Column mapping — Drug Tariff', bodyHtml, () => {
+      const mapping = {
+        name: $('#tm_name').value !== '' ? Number($('#tm_name').value) : null,
+        pack: $('#tm_pack').value !== '' ? Number($('#tm_pack').value) : null,
+        price: $('#tm_price').value !== '' ? Number($('#tm_price').value) : null,
+        pence: $('#tm_pence').checked,
+        headerRows: 1,
+      };
+      const monthLabel = $('#tm_month').value || currentYearMonth();
+      const rows = I.extractRows(grid, mapping);
+      if (!rows.length) { alert('No rows could be extracted with those column settings.'); return false; }
+
+      if (!state.products.length) {
+        // No products — store only, skip match review
+        idbPutTariff(rows, monthLabel).then(() => {
+          localStorage.setItem(KEYS.tariffMonth, monthLabel);
+          render();
+          alert(`${rows.length} tariff lines stored for ${esc(fmtYearMonth(monthLabel))}. Add products and use "Match tariff to products" to apply prices.`);
+        });
+        return true;
+      }
+
+      openMatchReviewModal(I.matchRows(state.products, rows), rows, monthLabel);
+      return true;
+    });
+
+    // Save button label
+    const saveBtn = host.querySelector('[data-x="save"]');
+    if (saveBtn) saveBtn.textContent = 'Continue';
+
+    // Live preview on change
+    function refreshPreview() {
+      const mapping = {
+        name: $('#tm_name').value !== '' ? Number($('#tm_name').value) : null,
+        pack: $('#tm_pack').value !== '' ? Number($('#tm_pack').value) : null,
+        price: $('#tm_price').value !== '' ? Number($('#tm_price').value) : null,
+        pence: ($('#tm_pence') || {}).checked,
+        headerRows: 1,
+      };
+      const prev = $('#tm_preview');
+      if (prev) prev.innerHTML = buildPreview(mapping);
+    }
+    ['tm_name', 'tm_pack', 'tm_price', 'tm_pence'].forEach((id) => {
+      const el = $('#' + id);
+      if (el) el.addEventListener('change', refreshPreview);
+    });
+  }
+
+  // ── Drug Tariff: match review modal ──
+  function openMatchReviewModal(proposals, allRows, monthLabel) {
+    if (!proposals.length) {
+      alert('No matches found between stored tariff lines and your products. Check that product names are similar to the tariff file.');
+      // Still store the tariff data
+      idbPutTariff(allRows, monthLabel).then(() => {
+        localStorage.setItem(KEYS.tariffMonth, monthLabel);
+        render();
+      });
+      return;
+    }
+
+    const confLabel = { exact: 'Exact', strong: 'Strong', weak: 'Weak' };
+
+    const rowsHtml = proposals.map((pr, idx) => {
+      const prod = state.products.find((p) => p.id === pr.productId);
+      const oldPrice = prod ? prod.tariff : null;
+      const newPrice = pr.row.price;
+      const checked = pr.confidence !== 'weak' ? 'checked' : '';
+      return `<tr>
+        <td><input type="checkbox" class="mr-chk" data-idx="${idx}" ${checked} style="width:auto;padding:0" /></td>
+        <td><div class="name" style="font-size:0.81rem">${esc(prod ? prod.name : pr.productId)}</div><div class="meta">${esc(prod ? (prod.pack || '') : '')}</div></td>
+        <td class="meta">${esc(pr.row.name)}<br>${esc(pr.row.pack || '')}</td>
+        <td class="num">${oldPrice != null ? esc(gbp(oldPrice)) : '—'} &rarr; ${esc(gbp(newPrice))}</td>
+        <td><span class="conf-${esc(pr.confidence)}">${esc(confLabel[pr.confidence] || pr.confidence)}</span></td>
+      </tr>`;
+    }).join('');
+
+    const bodyHtml = `
+      <p class="note" style="margin-bottom:8px">${esc(String(proposals.length))} match${proposals.length !== 1 ? 'es' : ''} found. Exact and strong matches are pre-selected. Review and tick the lines to apply.</p>
+      <div style="max-height:50vh;overflow-y:auto;margin-bottom:10px">
+        <table class="modal-import-table"><thead><tr><th></th><th>Product</th><th>Tariff line</th><th class="num">Old &rarr; New</th><th>Match</th></tr></thead>
+        <tbody>${rowsHtml}</tbody></table>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label style="font-size:0.79rem;display:flex;align-items:center;gap:5px"><input type="checkbox" id="mr_selectall" checked style="width:auto;padding:0" /> Select all</label>
+      </div>`;
+
+    const host = openModal('Match review — Drug Tariff', bodyHtml, () => {
+      const checked = Array.from(host.querySelectorAll('.mr-chk:checked')).map((el) => Number(el.dataset.idx));
+      let updated = 0;
+      for (const idx of checked) {
+        const pr = proposals[idx];
+        const i = state.products.findIndex((p) => p.id === pr.productId);
+        if (i >= 0) {
+          state.products[i] = Object.assign({}, state.products[i], { tariff: pr.row.price });
+          updated++;
+        }
+      }
+      save(KEYS.products, state.products);
+      idbPutTariff(allRows, monthLabel).then(() => {
+        localStorage.setItem(KEYS.tariffMonth, monthLabel);
+        render();
+        alert(`Updated ${updated} product${updated !== 1 ? 's' : ''} from the ${fmtYearMonth(monthLabel)} tariff. ${allRows.length} tariff lines stored for future matching.`);
+      });
+      return true;
+    });
+
+    const saveBtn = host.querySelector('[data-x="save"]');
+    if (saveBtn) saveBtn.textContent = 'Apply selected';
+
+    // Select-all toggle
+    const saEl = host.querySelector('#mr_selectall');
+    if (saEl) {
+      saEl.addEventListener('change', () => {
+        host.querySelectorAll('.mr-chk').forEach((cb) => { cb.checked = saEl.checked; });
+      });
+    }
+  }
+
+  // ── NCSO: apply concessions ──
+  function applyNcsoText(text, month) {
+    if (!text.trim()) { alert('Please paste or import the concession list first.'); return; }
+    const { rows, skipped } = I.parseConcessions(text);
+    if (!rows.length) { alert('No concession lines could be parsed. Check the format.'); return; }
+
+    const proposals = I.matchRows(state.products, rows);
+    const exact = proposals.filter((p) => p.confidence === 'exact' || p.confidence === 'strong');
+    const weak = proposals.filter((p) => p.confidence === 'weak');
+
+    function doApply(toApply) {
+      let applied = 0;
+      for (const pr of toApply) {
+        const i = state.products.findIndex((p) => p.id === pr.productId);
+        if (i >= 0) {
+          state.products[i] = Object.assign({}, state.products[i], { concessionPrice: pr.row.price });
+          applied++;
+        }
+      }
+      // Clear concessionPrice from products not in toApply
+      const appliedIds = new Set(toApply.map((p) => p.productId));
+      state.products = state.products.map((p) => {
+        if (!appliedIds.has(p.id) && p.concessionPrice !== undefined) {
+          const copy = Object.assign({}, p);
+          delete copy.concessionPrice;
+          return copy;
+        }
+        return p;
+      });
+      save(KEYS.products, state.products);
+      save(KEYS.concessions, { month, appliedAt: new Date().toISOString(), count: applied });
+      const unmatched = rows.length - proposals.length;
+      const skippedCount = skipped.length + unmatched;
+      render();
+      const resultEl = document.getElementById('ncsoResult');
+      if (resultEl) resultEl.textContent = `Applied ${applied} concession${applied !== 1 ? 's' : ''} (${skippedCount} lines skipped/unmatched).`;
+      else alert(`Applied ${applied} concession${applied !== 1 ? 's' : ''} (${skippedCount} lines skipped/unmatched).`);
+    }
+
+    if (!weak.length) {
+      doApply(exact);
+      return;
+    }
+
+    // Weak matches need confirm modal
+    const confLabel = { exact: 'Exact', strong: 'Strong', weak: 'Weak' };
+    const weakRowsHtml = weak.map((pr, idx) => {
+      const prod = state.products.find((p) => p.id === pr.productId);
+      return `<tr>
+        <td><input type="checkbox" class="nw-chk" data-idx="${idx}" style="width:auto;padding:0" /></td>
+        <td><div class="name" style="font-size:0.81rem">${esc(prod ? prod.name : pr.productId)}</div><div class="meta">${esc(prod ? (prod.pack || '') : '')}</div></td>
+        <td class="meta">${esc(pr.row.name)}<br>${esc(pr.row.pack || '')}</td>
+        <td class="num">${esc(gbp(pr.row.price))}</td>
+        <td><span class="conf-${esc(pr.confidence)}">${esc(confLabel[pr.confidence] || pr.confidence)}</span></td>
+      </tr>`;
+    }).join('');
+
+    const host = openModal('Weak concession matches', `
+      <p class="note" style="margin-bottom:8px">The following ${esc(String(weak.length))} line${weak.length !== 1 ? 's' : ''} matched weakly. Tick those you want to apply (unticked by default).</p>
+      <div style="max-height:40vh;overflow-y:auto;margin-bottom:10px">
+        <table class="modal-import-table"><thead><tr><th></th><th>Product</th><th>Concession line</th><th class="num">Price</th><th>Match</th></tr></thead>
+        <tbody>${weakRowsHtml}</tbody></table>
+      </div>`, () => {
+      const checkedIdxs = Array.from(host.querySelectorAll('.nw-chk:checked')).map((el) => Number(el.dataset.idx));
+      const selectedWeak = checkedIdxs.map((i) => weak[i]);
+      doApply(exact.concat(selectedWeak));
+      return true;
+    });
+    const saveBtn = host.querySelector('[data-x="save"]');
+    if (saveBtn) saveBtn.textContent = `Apply ${esc(String(exact.length))} auto + selected weak`;
   }
 
   // ── SETTINGS ──

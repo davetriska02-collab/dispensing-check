@@ -1,7 +1,8 @@
 # Dispensing Check
 
-An offline, self-contained web app for **UK dispensing GP practices** — a working
-alternative to RxMargin. It does two jobs from one shared dataset:
+An offline, self-contained web app for **UK dispensing GP practices**: margin
+analysis for the partners, a price-blind formulary for the prescribers, from
+one shared dataset.
 
 1. **Margin ledger (partners / practice manager).** Dispensing practices buy
    medicines from wholesalers but are reimbursed at Drug Tariff prices minus the
@@ -29,9 +30,14 @@ The UI is configurable per workstation: light/dark theme, four text sizes (also
 cycled by the topbar **aA** button), comfortable/compact density, and four accent
 colours — all under **Settings → Appearance**, persisted locally.
 
-All prices are entered or CSV-imported by the practice. **No live Drug Tariff or
-wholesaler price feeds are bundled** (those are licensed) — the money maths runs
-entirely locally in the browser; data is stored in `localStorage`.
+**Data in:** tariff prices can be imported from the NHSBSA Part VIII price list
+(CSV or XLSX — the XLSX reader is hand-rolled, zero dependencies) with column
+auto-detection and a confirm-before-apply match review; monthly **price
+concessions (NCSO)** can be pasted or imported and override the tariff in every
+margin calculation until cleared. Buy prices are entered or CSV-imported by the
+practice. **No live wholesaler price feeds are bundled** (those are licensed) —
+the money maths runs entirely locally in the browser; practice data is stored in
+`localStorage` and the imported tariff dataset in IndexedDB, all on-device.
 
 ## Run it
 
@@ -52,8 +58,10 @@ view, click **Load worked example** to explore with sample data.
 | `index.html` | App shell (top bar, nav, content root) |
 | `styles.css` | Glass UI; light/dark via the ◐ toggle |
 | `engine.js` | Pure calculation engine (no DOM/storage). Loads as a `<script>` (`window.DispensingEngine`) and as a CommonJS module for the tests |
-| `app.js` | UI controller, `localStorage` persistence, all views |
+| `importers.js` | Pure import engine: XLSX/CSV parsing, column detection, product matching, NCSO parsing (`window.DispensingImporters`) |
+| `app.js` | UI controller, `localStorage`/IndexedDB persistence, all views |
 | `test/engine.test.js` | Node regression tests for the engine, incl. the prescriber price-blindness guarantee |
+| `test/importers.test.js` | Node regression tests for the import engine, incl. an in-test XLSX fixture |
 
 ## Tests
 
@@ -78,7 +86,8 @@ marks the supplier in use.
 
 - `localStorage` keys: `dc.products`, `dc.config`, `dc.formulary`, `dc.history`,
   `dc.role`, `dc.theme`, `dc.practiceName`, `dc.partnerPin`, `dc.textSize`,
-  `dc.density`, `dc.accent`.
+  `dc.density`, `dc.accent`, `dc.tariffMonth`, `dc.concessions`. The imported
+  Drug Tariff reference dataset lives in the `dispensingCheck` IndexedDB.
 - Full JSON backup/restore and CSV import/export are in the **Import / export**
   tab. Imports that would replace existing data ask for confirmation first, and
   JSON backups are shape-validated on the way in.
@@ -106,5 +115,5 @@ browser DevTools.
 
 ## Status
 
-v1.0.0. Engine is regression-tested (51 tests); the UI is framework-free
-vanilla JS with zero dependencies and no build step.
+v1.1.0. Engine and importers are regression-tested (128 tests); the UI is
+framework-free vanilla JS with zero dependencies and no build step.
