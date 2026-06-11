@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.3.0 — 2026-06-11
+
+Your own data, automatically: real buy prices and real volumes from files
+the practice already receives - no licensed feeds, no typing. Still zero
+dependencies, still fully offline.
+
+### Added
+
+- **Wholesaler statement import** - import an invoice or quote export from
+  any wholesaler (AAH, Alliance, Phoenix or any CSV/XLSX with product, pack
+  and price columns). Column detection tuned for trade/net/unit price
+  headers, manual mapping fallback, confidence-badged match review, and
+  every accepted line becomes a date-stamped supplier quote.
+- **Monthly volume import** - import an ePACT2 or PMR dispensing volume
+  export (BNF Name / Presentation / Quantity headers detected); accepted
+  quantities become packs per month with an old-vs-new review first.
+- **Stale quote indicators** - supplier quotes older than 60 days are
+  visually muted in the ledger with the quote date on hover; the product
+  editor shows each quote's date. Editing a price by hand refreshes its
+  date stamp.
+- One generalised mapping + match-review flow now powers tariff, statement
+  and volume imports. 28 new engine/importer tests (196 total).
+
 ## v1.2.0 — 2026-06-11
 
 Five-minute start: adoption, durability and accessibility. Still zero

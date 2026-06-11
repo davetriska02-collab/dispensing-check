@@ -524,5 +524,25 @@ html[data-accent='amber'] .seg button.active { color: #0f172a; }
   flex-shrink: 0;
 }
 
+/* ── Stale supplier quote chip ──────────────────────────────────────────────── */
+.chip-stale {
+  opacity: 0.6;
+  text-decoration: underline;
+  text-decoration-style: dashed;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--amber);
+}
+:root[data-theme='light'] .chip-stale {
+  opacity: 0.65;
+}
+
+/* ── Supplier quoted-at date in product editor ──────────────────────────────── */
+.sup-quoted-at {
+  font-family: var(--mono);
+  font-size: 0.56rem;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 @media print { .topbar, .nav { display: none; } .content { max-width: none; } body { background: #fff; } }

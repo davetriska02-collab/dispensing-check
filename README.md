@@ -30,14 +30,17 @@ The UI is configurable per workstation: light/dark theme, four text sizes (also
 cycled by the topbar **aA** button), comfortable/compact density, and four accent
 colours — all under **Settings → Appearance**, persisted locally.
 
-**Data in:** tariff prices can be imported from the NHSBSA Part VIII price list
-(CSV or XLSX — the XLSX reader is hand-rolled, zero dependencies) with column
-auto-detection and a confirm-before-apply match review; monthly **price
-concessions (NCSO)** can be pasted or imported and override the tariff in every
-margin calculation until cleared. Buy prices are entered or CSV-imported by the
-practice. **No live wholesaler price feeds are bundled** (those are licensed) —
-the money maths runs entirely locally in the browser; practice data is stored in
-`localStorage` and the imported tariff dataset in IndexedDB, all on-device.
+**Data in:** tariff prices import from the NHSBSA Part VIII price list (CSV or
+XLSX — the XLSX reader is hand-rolled, zero dependencies); monthly **price
+concessions (NCSO)** paste or import and override the tariff until cleared;
+**wholesaler statements/quotes** (AAH, Alliance, Phoenix or any CSV/XLSX)
+import as date-stamped supplier quotes with stale-quote indicators after 60
+days; **monthly volumes** import from ePACT2/PMR exports. Every import uses
+column auto-detection with a manual mapping fallback and a
+confirm-before-apply match review. **No live wholesaler price feeds are
+bundled** (those are licensed) — the money maths runs entirely locally in the
+browser; practice data is stored in `localStorage` and the imported tariff
+dataset in IndexedDB, all on-device.
 
 ## Run it
 
@@ -121,5 +124,5 @@ browser DevTools.
 
 ## Status
 
-v1.2.0. Engine and importers are regression-tested (161 tests); the UI is
+v1.3.0. Engine and importers are regression-tested (196 tests); the UI is
 framework-free vanilla JS with zero dependencies and no build step.

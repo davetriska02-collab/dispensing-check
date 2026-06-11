@@ -1419,6 +1419,23 @@
     </div></div>`;
   }
 
+  // ── stale-quote helpers ──
+  const STALE_DAYS = 60;
+  function isStaleQuote(quotedAt) {
+    if (!quotedAt) return false;
+    const d = new Date(quotedAt);
+    if (!isFinite(d.getTime())) return false;
+    return (Date.now() - d.getTime()) > STALE_DAYS * 24 * 60 * 60 * 1000;
+  }
+  function fmtQuotedAt(quotedAt) {
+    if (!quotedAt) return '';
+    try {
+      const d = new Date(quotedAt);
+      if (!isFinite(d.getTime())) return '';
+      return d.toLocaleDateString('en-GB');
+    } catch (_) { return ''; }
+  }
+
   function ledgerTable(metrics) {
     const rows = metrics
       .map(({ p, m }) => {
@@ -1431,7 +1448,11 @@
             const sp = E.priceValue(s.price);
             const best = m.best && s.name === m.best.name && sp !== null && sp === m.best.price;
             const cur = m.current && s.name === m.current.name;
-            return `<span class="chip ${best ? 'best' : ''}">${esc(s.name)} ${sp === null ? '—' : gbp(sp)}${cur ? ' ●' : ''}</span>`;
+            const stale = isStaleQuote(s.quotedAt);
+            const dateStr = fmtQuotedAt(s.quotedAt);
+            const chipClass = 'chip' + (best ? ' best' : '') + (stale ? ' chip-stale' : '');
+            const titleAttr = dateStr ? ` title="quoted ${esc(dateStr)}"` : '';
+            return `<span class="${chipClass}"${titleAttr}>${esc(s.name)} ${sp === null ? '—' : gbp(sp)}${cur ? ' ●' : ''}</span>`;
           })
           .join('');
         const mc = m.marginPerPackCurrent == null ? '' : m.marginPerPackCurrent < 0 ? 'neg' : 'pos';
@@ -1501,6 +1522,8 @@
   // ── product editor ──
   function editProduct(id) {
     const existing = id ? state.products.find((p) => p.id === id) : null;
+    // Keep a snapshot of original suppliers for quotedAt comparison on save
+    const originalSuppliers = existing ? (existing.suppliers || []).map((s) => Object.assign({}, s)) : [];
     const p = existing
       ? JSON.parse(JSON.stringify(existing))
       : { id: E.makeId(), name: '', pack: '', category: 'generic', tariff: 0, monthlyPacks: 0, suppliers: [{ name: '', price: '' }], currentSupplier: null };
@@ -1524,7 +1547,27 @@
         p.category = $('#f_cat').value;
         p.tariff = Number($('#f_tariff').value) || 0;
         p.monthlyPacks = Math.max(0, Number($('#f_packs').value) || 0);
-        p.suppliers = p.suppliers.map((s) => ({ name: String(s.name || '').trim(), price: s.price === '' ? '' : Number(s.price) })).filter((s) => s.name !== '');
+        const now = new Date().toISOString();
+        p.suppliers = p.suppliers
+          .map((s) => {
+            const name = String(s.name || '').trim();
+            const price = s.price === '' ? '' : Number(s.price);
+            const orig = originalSuppliers.find((o) => o.name === name);
+            let quotedAt = (s.quotedAt && isFinite(new Date(s.quotedAt).getTime())) ? s.quotedAt : undefined;
+            if (orig) {
+              // Preserve existing quotedAt; update to now if price changed
+              const origPrice = orig.price === '' ? '' : Number(orig.price);
+              if (origPrice !== price) {
+                quotedAt = now;
+              } else if (!quotedAt && orig.quotedAt && isFinite(new Date(orig.quotedAt).getTime())) {
+                quotedAt = orig.quotedAt;
+              }
+            }
+            const out = { name, price };
+            if (quotedAt) out.quotedAt = quotedAt;
+            return out;
+          })
+          .filter((s) => s.name !== '');
         if (p.currentSupplier && !p.suppliers.some((s) => s.name === p.currentSupplier)) p.currentSupplier = null;
         if (!p.name) {
           alert('Please enter a product name.');
@@ -1542,9 +1585,11 @@
     const list = $('#f_sups');
     function draw() {
       list.innerHTML = p.suppliers
-        .map(
-          (s, i) => `<div class="sup-edit"><input type="radio" name="cur" ${s.name && s.name === p.currentSupplier ? 'checked' : ''} data-cur="${i}" title="Currently used" /><input class="sname" data-i="${i}" value="${esc(s.name)}" placeholder="Supplier" /><input class="sprice" type="number" step="0.01" min="0" data-i="${i}" value="${s.price === '' ? '' : Number(s.price)}" placeholder="£/pack" /><button type="button" class="iconbtn" data-rm="${i}">✕</button></div>`
-        )
+        .map((s, i) => {
+          const dateStr = fmtQuotedAt(s.quotedAt);
+          const dateSpan = dateStr ? ` <span class="sup-quoted-at">${esc(dateStr)}</span>` : '';
+          return `<div class="sup-edit"><input type="radio" name="cur" ${s.name && s.name === p.currentSupplier ? 'checked' : ''} data-cur="${i}" title="Currently used" /><input class="sname" data-i="${i}" value="${esc(s.name)}" placeholder="Supplier" /><input class="sprice" type="number" step="0.01" min="0" data-i="${i}" value="${s.price === '' ? '' : Number(s.price)}" placeholder="£/pack" />${dateSpan}<button type="button" class="iconbtn" data-rm="${i}">✕</button></div>`;
+        })
         .join('');
       list.querySelectorAll('.sname').forEach((el) => el.addEventListener('input', (e) => (p.suppliers[+e.target.dataset.i].name = e.target.value)));
       list.querySelectorAll('.sprice').forEach((el) => el.addEventListener('input', (e) => (p.suppliers[+e.target.dataset.i].price = e.target.value === '' ? '' : Number(e.target.value))));
@@ -1697,10 +1742,17 @@
     const catIds = E.CATEGORIES.map((c) => c.id);
     return raw.filter((x) => x && typeof x === 'object').map((x) => {
       const suppliers = Array.isArray(x.suppliers)
-        ? x.suppliers.filter((s) => s && typeof s === 'object' && String(s.name || '').trim()).map((s) => ({
-            name: String(s.name).trim(),
-            price: isFinite(Number(s.price)) ? Number(s.price) : '',
-          }))
+        ? x.suppliers.filter((s) => s && typeof s === 'object' && String(s.name || '').trim()).map((s) => {
+            const out = {
+              name: String(s.name).trim(),
+              price: isFinite(Number(s.price)) ? Number(s.price) : '',
+            };
+            // Preserve quotedAt if valid parseable date string
+            if (typeof s.quotedAt === 'string' && s.quotedAt && isFinite(new Date(s.quotedAt).getTime())) {
+              out.quotedAt = s.quotedAt;
+            }
+            return out;
+          })
         : [];
       const out = {
         id: typeof x.id === 'string' && x.id ? x.id : E.makeId(),
@@ -1786,6 +1838,24 @@
         <p class="note" id="ncsoResult" style="margin-top:6px"></p>
       </div></div>
 
+      <div class="panel" id="statementPanel"><h3>Wholesaler statement / quotes</h3><div class="pad">
+        <p class="note">Import an invoice or quote export from your wholesaler — AAH, Alliance, Phoenix or any CSV/XLSX with product, pack and price columns. Prices become dated supplier quotes.</p>
+        <div class="btn-row" style="margin-top:10px">
+          <button class="btn btn-primary" data-a="impstatement">Import statement file</button>
+        </div>
+        <p class="note" id="statementResult" style="margin-top:6px"></p>
+        <input type="file" id="fstatement" accept=".csv,.xlsx" style="display:none" />
+      </div></div>
+
+      <div class="panel" id="volumePanel"><h3>Monthly volumes (ePACT2 / PMR)</h3><div class="pad">
+        <p class="note">Import a dispensing volume export from ePACT2 or your PMR. Quantities become packs/month on matched products.</p>
+        <div class="btn-row" style="margin-top:10px">
+          <button class="btn btn-primary" data-a="impvolume">Import volume file</button>
+        </div>
+        <p class="note" id="volumeResult" style="margin-top:6px"></p>
+        <input type="file" id="fvolume" accept=".csv,.xlsx" style="display:none" />
+      </div></div>
+
       <div class="panel"><h3>Price list (CSV)</h3><div class="pad">
         <p class="note">Columns: <code>${esc(E.CSV_HEADER)}</code>. Rows sharing name+pack group into one product. Empty price = unpriced.</p>
         <div class="btn-row"><button class="btn" data-a="impcsv">Import CSV</button><button class="btn" data-a="expcsv">Export CSV</button></div>
@@ -1809,7 +1879,29 @@
         if (!tariffRows.length) { alert('No tariff data stored. Import a tariff file first.'); return; }
         if (!state.products.length) { alert('No products to match against. Add products first.'); return; }
         const proposals = I.matchRows(state.products, tariffRows);
-        openMatchReviewModal(proposals, tariffRows, localStorage.getItem(KEYS.tariffMonth) || '');
+        const ml = localStorage.getItem(KEYS.tariffMonth) || '';
+        openMatchReviewModal(proposals, tariffRows, ml, {
+          title: 'Match review — Drug Tariff',
+          colHeader: 'Tariff line',
+          valueOf: function (row) { return gbp(row.price); },
+          oldOf: function (prod) { return prod && prod.tariff != null ? gbp(prod.tariff) : '—'; },
+          onApply: function (approved, rows, monthLabel) {
+            let updated = 0;
+            for (const pr of approved) {
+              const i = state.products.findIndex((p) => p.id === pr.productId);
+              if (i >= 0) {
+                state.products[i] = Object.assign({}, state.products[i], { tariff: pr.row.price });
+                updated++;
+              }
+            }
+            save(KEYS.products, state.products);
+            idbPutTariff(rows, monthLabel).then(() => {
+              localStorage.setItem(KEYS.tariffMonth, monthLabel);
+              render();
+              alert(`Updated ${updated} product${updated !== 1 ? 's' : ''} from the ${fmtYearMonth(monthLabel)} tariff. ${rows.length} tariff lines stored for future matching.`);
+            });
+          },
+        });
       });
     });
 
@@ -1866,6 +1958,117 @@
         alert('Could not read that file: ' + esc(err.message));
       }
     });
+
+    // ── Wholesaler statement import ──
+    const fstatement = $('#fstatement');
+    bindMaybe('[data-a="impstatement"]', () => fstatement && fstatement.click());
+    if (fstatement) {
+      fstatement.addEventListener('change', async (e) => {
+        const f = e.target.files[0];
+        if (!f) return;
+        e.target.value = '';
+        try {
+          let grid;
+          if (f.name.toLowerCase().endsWith('.xlsx')) {
+            const buf = await f.arrayBuffer();
+            grid = await I.parseXlsx(buf);
+          } else {
+            const text = await f.text();
+            grid = I.gridFromCsv(text);
+          }
+          if (!grid || !grid.length) { alert('No data found in that file.'); return; }
+          openMappingModal('statement', grid, {
+            fileName: f.name,
+            onContinue: function (mapping, rows, extraData) {
+              const supplierName = extraData.supplierName;
+              if (!state.products.length) { alert('No products to match against. Add products first.'); return; }
+              const proposals = I.matchRows(state.products, rows);
+              openMatchReviewModal(proposals, rows, null, {
+                title: 'Match review — wholesaler statement',
+                colHeader: 'Statement line',
+                valueOf: function (row) { return gbp(row.price); },
+                oldOf: function (prod) {
+                  if (!prod) return '—';
+                  const sup = (prod.suppliers || []).find((s) => s.name === supplierName);
+                  return sup && E.priceValue(sup.price) != null ? gbp(E.priceValue(sup.price)) : '—';
+                },
+                noMatchMsg: 'No matches found between the statement and your products. Check that product names are similar.',
+                onApply: function (approved) {
+                  const now = new Date().toISOString();
+                  const proposals = approved.map((pr) => ({ productId: pr.productId, price: pr.row.price }));
+                  state.products = E.applyStatement(state.products, supplierName, proposals, now);
+                  const updated = approved.length;
+                  save(KEYS.products, state.products);
+                  render();
+                  const resultEl = document.getElementById('statementResult');
+                  const msg = `Updated ${updated} supplier quote${updated !== 1 ? 's' : ''} for ${supplierName}.`;
+                  if (resultEl) resultEl.textContent = msg;
+                  else alert(msg);
+                },
+              });
+            },
+          });
+        } catch (err) {
+          alert('Could not read that file: ' + esc(err.message));
+        }
+      });
+    }
+
+    // ── Volume import ──
+    const fvolume = $('#fvolume');
+    bindMaybe('[data-a="impvolume"]', () => fvolume && fvolume.click());
+    if (fvolume) {
+      fvolume.addEventListener('change', async (e) => {
+        const f = e.target.files[0];
+        if (!f) return;
+        e.target.value = '';
+        try {
+          let grid;
+          if (f.name.toLowerCase().endsWith('.xlsx')) {
+            const buf = await f.arrayBuffer();
+            grid = await I.parseXlsx(buf);
+          } else {
+            const text = await f.text();
+            grid = I.gridFromCsv(text);
+          }
+          if (!grid || !grid.length) { alert('No data found in that file.'); return; }
+          openMappingModal('volume', grid, {
+            fileName: f.name,
+            onContinue: function (mapping, rows) {
+              if (!state.products.length) { alert('No products to match against. Add products first.'); return; }
+              // matchRows uses row.name and row.pack only; volume rows have name/pack/qty
+              const proposals = I.matchRows(state.products, rows);
+              openMatchReviewModal(proposals, rows, null, {
+                title: 'Match review — monthly volumes',
+                colHeader: 'Volume line',
+                valueOf: function (row) { return String(row.qty != null ? row.qty : row.price) + ' packs'; },
+                oldOf: function (prod) {
+                  if (!prod) return '—';
+                  return (prod.monthlyPacks != null ? String(prod.monthlyPacks) : '0') + ' packs';
+                },
+                noMatchMsg: 'No matches found between the volume file and your products. Check that product names are similar.',
+                onApply: function (approved) {
+                  const volumeProposals = approved.map((pr) => ({
+                    productId: pr.productId,
+                    qty: pr.row.qty != null ? pr.row.qty : pr.row.price,
+                  }));
+                  state.products = E.applyVolumes(state.products, volumeProposals);
+                  const updated = approved.length;
+                  save(KEYS.products, state.products);
+                  render();
+                  const resultEl = document.getElementById('volumeResult');
+                  const msg = `Updated volumes on ${updated} product${updated !== 1 ? 's' : ''}.`;
+                  if (resultEl) resultEl.textContent = msg;
+                  else alert(msg);
+                },
+              });
+            },
+          });
+        } catch (err) {
+          alert('Could not read that file: ' + esc(err.message));
+        }
+      });
+    }
 
     // ── Price list CSV ──
     bindMaybe('[data-a="impcsv"]', () => fcsv.click());
@@ -2030,16 +2233,27 @@
     });
   }
 
-  // ── Drug Tariff: column mapping modal ──
-  function openTariffMappingModal(grid, fileName) {
+  // ── Generalised column mapping modal ──
+  // kind: 'tariff' | 'statement' | 'volume'
+  // opts: { fileName, onContinue(mapping, extraData) }
+  function openMappingModal(kind, grid, opts) {
+    const fileName = opts.fileName || '';
     const headerRow = grid[0] || [];
-    const detected = I.detectColumns(headerRow, 'tariff');
+    const detected = I.detectColumns(headerRow, kind === 'volume' ? 'volume' : kind);
     const colOpts = (sel) => headerRow.map((h, i) =>
       `<option value="${i}" ${sel === i ? 'selected' : ''}>${esc(h || '(col ' + (i + 1) + ')')}</option>`
     ).join('');
     const noneOpt = '<option value="">-- none --</option>';
+    const noneOptPack = '<option value="">- none -</option>';
 
     function buildPreview(mapping) {
+      if (kind === 'volume') {
+        const rows = I.extractVolumeRows(grid, mapping).slice(0, 5);
+        if (!rows.length) return '<p class="note">No rows extracted with current settings.</p>';
+        return `<table class="modal-import-table"><thead><tr><th>Name</th><th>Pack</th><th class="num">Qty</th></tr></thead><tbody>${
+          rows.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.pack || '')}</td><td class="num">${esc(String(r.qty))}</td></tr>`).join('')
+        }</tbody></table>`;
+      }
       const rows = I.extractRows(grid, mapping).slice(0, 5);
       if (!rows.length) return '<p class="note">No rows extracted with current settings.</p>';
       return `<table class="modal-import-table"><thead><tr><th>Name</th><th>Pack</th><th class="num">Price</th></tr></thead><tbody>${
@@ -2047,80 +2261,181 @@
       }</tbody></table>`;
     }
 
-    const bodyId = 'tariffMapBody';
+    // Build supplier datalist for statement kind
+    let supplierDatalist = '';
+    if (kind === 'statement') {
+      const names = new Set();
+      for (const p of state.products) {
+        for (const s of (p.suppliers || [])) {
+          if (s.name) names.add(s.name);
+        }
+      }
+      supplierDatalist = `<datalist id="mm_supplier_list">${[...names].map((n) => `<option value="${esc(n)}">`).join('')}</datalist>`;
+    }
+
+    const titleMap = { tariff: 'Column mapping — Drug Tariff', statement: 'Column mapping — wholesaler statement', volume: 'Column mapping — volume import' };
+
+    const packColHtml = kind === 'volume'
+      ? `<label class="field"><span>Pack column (optional)</span><select id="mm_pack">${noneOptPack}${colOpts(detected.pack)}</select></label>`
+      : `<label class="field"><span>Pack column</span><select id="mm_pack">${noneOpt}${colOpts(detected.pack)}</select></label>`;
+
+    const thirdColHtml = kind === 'volume'
+      ? `<label class="field"><span>Quantity column</span><select id="mm_qty">${noneOpt}${colOpts(detected.qty)}</select></label>`
+      : `<label class="field"><span>Price column</span><select id="mm_price">${noneOpt}${colOpts(detected.price)}</select></label>`;
+
+    const extraFieldsHtml = kind === 'volume' ? '' : `
+      <div class="field-row">
+        <label class="field" style="flex-direction:row;align-items:center;gap:8px;margin-bottom:0">
+          <input type="checkbox" id="mm_pence" ${detected.pence ? 'checked' : ''} style="width:auto;padding:0" />
+          <span>Prices are in pence</span>
+        </label>
+        ${kind === 'tariff' ? `<label class="field"><span>Month</span><input type="month" id="mm_month" value="${esc(currentYearMonth())}" /></label>` : ''}
+        ${kind === 'statement' ? `<div style="flex:1">${supplierDatalist}<label class="field"><span>Supplier name</span><input id="mm_supplier" list="mm_supplier_list" value="" placeholder="e.g. AAH Pharmaceuticals" /></label></div>` : ''}
+      </div>`;
+
+    const initialMapping = kind === 'volume'
+      ? { name: detected.name, pack: detected.pack, qty: detected.qty, headerRows: 1 }
+      : { name: detected.name, pack: detected.pack, price: detected.price, pence: detected.pence, headerRows: 1 };
+
     const bodyHtml = `
       <p class="note" style="margin-bottom:10px">File: <strong>${esc(fileName)}</strong> — ${esc(String(grid.length - 1))} data rows detected.</p>
       <div class="field-row">
-        <label class="field"><span>Name column</span><select id="tm_name">${noneOpt}${colOpts(detected.name)}</select></label>
-        <label class="field"><span>Pack column</span><select id="tm_pack">${noneOpt}${colOpts(detected.pack)}</select></label>
-        <label class="field"><span>Price column</span><select id="tm_price">${noneOpt}${colOpts(detected.price)}</select></label>
+        <label class="field"><span>Name column</span><select id="mm_name">${noneOpt}${colOpts(detected.name)}</select></label>
+        ${packColHtml}
+        ${thirdColHtml}
       </div>
-      <div class="field-row">
-        <label class="field" style="flex-direction:row;align-items:center;gap:8px;margin-bottom:0">
-          <input type="checkbox" id="tm_pence" ${detected.pence ? 'checked' : ''} style="width:auto;padding:0" />
-          <span>Prices are in pence</span>
-        </label>
-        <label class="field"><span>Month</span><input type="month" id="tm_month" value="${esc(currentYearMonth())}" /></label>
-      </div>
-      <div id="tm_preview" style="margin-top:10px;max-height:160px;overflow-y:auto">${buildPreview({ name: detected.name, pack: detected.pack, price: detected.price, pence: detected.pence, headerRows: 1 })}</div>`;
+      ${extraFieldsHtml}
+      <div id="mm_preview" style="margin-top:10px;max-height:160px;overflow-y:auto">${buildPreview(initialMapping)}</div>`;
 
-    const host = openModal('Column mapping — Drug Tariff', bodyHtml, () => {
-      const mapping = {
-        name: $('#tm_name').value !== '' ? Number($('#tm_name').value) : null,
-        pack: $('#tm_pack').value !== '' ? Number($('#tm_pack').value) : null,
-        price: $('#tm_price').value !== '' ? Number($('#tm_price').value) : null,
-        pence: $('#tm_pence').checked,
-        headerRows: 1,
-      };
-      const monthLabel = $('#tm_month').value || currentYearMonth();
-      const rows = I.extractRows(grid, mapping);
-      if (!rows.length) { alert('No rows could be extracted with those column settings.'); return false; }
+    const host = openModal(titleMap[kind] || 'Column mapping', bodyHtml, () => {
+      const nameVal = $('#mm_name').value !== '' ? Number($('#mm_name').value) : null;
+      const packVal = $('#mm_pack').value !== '' ? Number($('#mm_pack').value) : null;
 
-      if (!state.products.length) {
-        // No products — store only, skip match review
-        idbPutTariff(rows, monthLabel).then(() => {
-          localStorage.setItem(KEYS.tariffMonth, monthLabel);
-          render();
-          alert(`${rows.length} tariff lines stored for ${esc(fmtYearMonth(monthLabel))}. Add products and use "Match tariff to products" to apply prices.`);
-        });
-        return true;
+      let mapping, extraData;
+      if (kind === 'volume') {
+        const qtyVal = $('#mm_qty').value !== '' ? Number($('#mm_qty').value) : null;
+        mapping = { name: nameVal, pack: packVal, qty: qtyVal, headerRows: 1 };
+        extraData = {};
+      } else {
+        const priceVal = $('#mm_price').value !== '' ? Number($('#mm_price').value) : null;
+        const penceVal = ($('#mm_pence') || {}).checked || false;
+        mapping = { name: nameVal, pack: packVal, price: priceVal, pence: penceVal, headerRows: 1 };
+        if (kind === 'tariff') {
+          extraData = { monthLabel: ($('#mm_month') || {}).value || currentYearMonth() };
+        } else {
+          const supEl = $('#mm_supplier');
+          const supplierName = (supEl ? supEl.value : '').trim();
+          if (!supplierName) { alert('Please enter a supplier name.'); return false; }
+          extraData = { supplierName };
+        }
       }
 
-      openMatchReviewModal(I.matchRows(state.products, rows), rows, monthLabel);
+      if (kind === 'volume') {
+        const rows = I.extractVolumeRows(grid, mapping);
+        if (!rows.length) { alert('No rows could be extracted with those column settings.'); return false; }
+        opts.onContinue(mapping, rows, extraData);
+      } else {
+        const rows = I.extractRows(grid, mapping);
+        if (!rows.length) { alert('No rows could be extracted with those column settings.'); return false; }
+        opts.onContinue(mapping, rows, extraData);
+      }
       return true;
     });
 
-    // Save button label
     const saveBtn = host.querySelector('[data-x="save"]');
     if (saveBtn) saveBtn.textContent = 'Continue';
 
-    // Live preview on change
     function refreshPreview() {
-      const mapping = {
-        name: $('#tm_name').value !== '' ? Number($('#tm_name').value) : null,
-        pack: $('#tm_pack').value !== '' ? Number($('#tm_pack').value) : null,
-        price: $('#tm_price').value !== '' ? Number($('#tm_price').value) : null,
-        pence: ($('#tm_pence') || {}).checked,
-        headerRows: 1,
-      };
-      const prev = $('#tm_preview');
+      const nameVal = $('#mm_name').value !== '' ? Number($('#mm_name').value) : null;
+      const packVal = $('#mm_pack').value !== '' ? Number($('#mm_pack').value) : null;
+      let mapping;
+      if (kind === 'volume') {
+        const qtyVal = $('#mm_qty').value !== '' ? Number($('#mm_qty').value) : null;
+        mapping = { name: nameVal, pack: packVal, qty: qtyVal, headerRows: 1 };
+      } else {
+        const priceVal = $('#mm_price').value !== '' ? Number($('#mm_price').value) : null;
+        const penceVal = ($('#mm_pence') || {}).checked || false;
+        mapping = { name: nameVal, pack: packVal, price: priceVal, pence: penceVal, headerRows: 1 };
+      }
+      const prev = $('#mm_preview');
       if (prev) prev.innerHTML = buildPreview(mapping);
     }
-    ['tm_name', 'tm_pack', 'tm_price', 'tm_pence'].forEach((id) => {
+    const watchIds = kind === 'volume'
+      ? ['mm_name', 'mm_pack', 'mm_qty']
+      : ['mm_name', 'mm_pack', 'mm_price', 'mm_pence'];
+    watchIds.forEach((id) => {
       const el = $('#' + id);
       if (el) el.addEventListener('change', refreshPreview);
     });
   }
 
-  // ── Drug Tariff: match review modal ──
-  function openMatchReviewModal(proposals, allRows, monthLabel) {
+  // Compatibility shim — keeps the tariff file handler calling the old name
+  function openTariffMappingModal(grid, fileName) {
+    openMappingModal('tariff', grid, {
+      fileName,
+      onContinue: function (mapping, rows, extraData) {
+        const monthLabel = extraData.monthLabel;
+        if (!state.products.length) {
+          idbPutTariff(rows, monthLabel).then(() => {
+            localStorage.setItem(KEYS.tariffMonth, monthLabel);
+            render();
+            alert(`${rows.length} tariff lines stored for ${esc(fmtYearMonth(monthLabel))}. Add products and use "Match tariff to products" to apply prices.`);
+          });
+          return;
+        }
+        openMatchReviewModal(I.matchRows(state.products, rows), rows, monthLabel, {
+          title: 'Match review — Drug Tariff',
+          colHeader: 'Tariff line',
+          valueOf: function (row) { return gbp(row.price); },
+          oldOf: function (prod) { return prod && prod.tariff != null ? gbp(prod.tariff) : '—'; },
+          onApply: function (approved, tariffRows, ml) {
+            let updated = 0;
+            for (const pr of approved) {
+              const i = state.products.findIndex((p) => p.id === pr.productId);
+              if (i >= 0) {
+                state.products[i] = Object.assign({}, state.products[i], { tariff: pr.row.price });
+                updated++;
+              }
+            }
+            save(KEYS.products, state.products);
+            idbPutTariff(tariffRows, ml).then(() => {
+              localStorage.setItem(KEYS.tariffMonth, ml);
+              render();
+              alert(`Updated ${updated} product${updated !== 1 ? 's' : ''} from the ${fmtYearMonth(ml)} tariff. ${tariffRows.length} tariff lines stored for future matching.`);
+            });
+          },
+        });
+      },
+    });
+  }
+
+  // ── Generalised match review modal ──
+  // opts: {
+  //   label:    string  e.g. 'tariff line' | 'statement line' | 'volume line'
+  //   title:    string  modal title
+  //   colHeader: string column header for the import line column
+  //   valueOf:  fn(row) -> string  value cell for the import row (e.g. price)
+  //   oldOf:    fn(product) -> string  current value for the product (e.g. current tariff)
+  //   onApply:  fn(checkedProposals) called with approved proposals; must save + render
+  //   noMatchMsg: string
+  // }
+  function openMatchReviewModal(proposals, allRows, monthLabel, opts) {
+    opts = opts || {};
+    const label = opts.label || 'tariff line';
+    const title = opts.title || 'Match review — Drug Tariff';
+    const colHeader = opts.colHeader || 'Tariff line';
+    const valueOf = opts.valueOf || function (row) { return gbp(row.price); };
+    const oldOf = opts.oldOf || function (prod) { return prod && prod.tariff != null ? gbp(prod.tariff) : '—'; };
+
     if (!proposals.length) {
-      alert('No matches found between stored tariff lines and your products. Check that product names are similar to the tariff file.');
-      // Still store the tariff data
-      idbPutTariff(allRows, monthLabel).then(() => {
-        localStorage.setItem(KEYS.tariffMonth, monthLabel);
-        render();
-      });
+      const noMsg = opts.noMatchMsg || 'No matches found between the import file and your products. Check that product names are similar.';
+      alert(noMsg);
+      if (monthLabel) {
+        idbPutTariff(allRows, monthLabel).then(() => {
+          localStorage.setItem(KEYS.tariffMonth, monthLabel);
+          render();
+        });
+      }
       return;
     }
 
@@ -2128,14 +2443,14 @@
 
     const rowsHtml = proposals.map((pr, idx) => {
       const prod = state.products.find((p) => p.id === pr.productId);
-      const oldPrice = prod ? prod.tariff : null;
-      const newPrice = pr.row.price;
+      const oldVal = oldOf(prod, pr);
+      const newVal = valueOf(pr.row, pr);
       const checked = pr.confidence !== 'weak' ? 'checked' : '';
       return `<tr>
         <td><input type="checkbox" class="mr-chk" data-idx="${idx}" ${checked} style="width:auto;padding:0" /></td>
         <td><div class="name" style="font-size:0.81rem">${esc(prod ? prod.name : pr.productId)}</div><div class="meta">${esc(prod ? (prod.pack || '') : '')}</div></td>
         <td class="meta">${esc(pr.row.name)}<br>${esc(pr.row.pack || '')}</td>
-        <td class="num">${oldPrice != null ? esc(gbp(oldPrice)) : '—'} &rarr; ${esc(gbp(newPrice))}</td>
+        <td class="num">${esc(oldVal)} &rarr; ${esc(newVal)}</td>
         <td><span class="conf-${esc(pr.confidence)}">${esc(confLabel[pr.confidence] || pr.confidence)}</span></td>
       </tr>`;
     }).join('');
@@ -2143,37 +2458,23 @@
     const bodyHtml = `
       <p class="note" style="margin-bottom:8px">${esc(String(proposals.length))} match${proposals.length !== 1 ? 'es' : ''} found. Exact and strong matches are pre-selected. Review and tick the lines to apply.</p>
       <div style="max-height:50vh;overflow-y:auto;margin-bottom:10px">
-        <table class="modal-import-table"><thead><tr><th></th><th>Product</th><th>Tariff line</th><th class="num">Old &rarr; New</th><th>Match</th></tr></thead>
+        <table class="modal-import-table"><thead><tr><th></th><th>Product</th><th>${esc(colHeader)}</th><th class="num">Old &rarr; New</th><th>Match</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <label style="font-size:0.79rem;display:flex;align-items:center;gap:5px"><input type="checkbox" id="mr_selectall" checked style="width:auto;padding:0" /> Select all</label>
       </div>`;
 
-    const host = openModal('Match review — Drug Tariff', bodyHtml, () => {
+    const host = openModal(title, bodyHtml, () => {
       const checked = Array.from(host.querySelectorAll('.mr-chk:checked')).map((el) => Number(el.dataset.idx));
-      let updated = 0;
-      for (const idx of checked) {
-        const pr = proposals[idx];
-        const i = state.products.findIndex((p) => p.id === pr.productId);
-        if (i >= 0) {
-          state.products[i] = Object.assign({}, state.products[i], { tariff: pr.row.price });
-          updated++;
-        }
-      }
-      save(KEYS.products, state.products);
-      idbPutTariff(allRows, monthLabel).then(() => {
-        localStorage.setItem(KEYS.tariffMonth, monthLabel);
-        render();
-        alert(`Updated ${updated} product${updated !== 1 ? 's' : ''} from the ${fmtYearMonth(monthLabel)} tariff. ${allRows.length} tariff lines stored for future matching.`);
-      });
+      const approved = checked.map((i) => proposals[i]);
+      opts.onApply(approved, allRows, monthLabel);
       return true;
     });
 
     const saveBtn = host.querySelector('[data-x="save"]');
     if (saveBtn) saveBtn.textContent = 'Apply selected';
 
-    // Select-all toggle
     const saEl = host.querySelector('#mr_selectall');
     if (saEl) {
       saEl.addEventListener('change', () => {
