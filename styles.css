@@ -185,5 +185,90 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .rx-line .drug { font-weight: 650; } .rx-line .dose { font-size: 11px; color: var(--text-3); }
 .rx-lock { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-3); border-top: 1px solid var(--stroke); margin-top: 16px; padding-top: 14px; }
 
+/* ── Insights view ──────────────────────────────────────────────────────── */
+
+/* Chart palette — defined per theme so SVG var() picks up the right value */
+:root {
+  --chart1: #5b8cff;
+  --chart2: #46d68b;
+  --chart3: #f2b138;
+  --chart4: #c084fc;
+}
+:root[data-theme='light'] {
+  --chart1: #2563eb;
+  --chart2: #16a34a;
+  --chart3: #b45309;
+  --chart4: #7c3aed;
+}
+
+.insights-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.insights-grid > .panel { margin-bottom: 0; }
+
+@media (max-width: 800px) {
+  .insights-grid { grid-template-columns: 1fr; }
+}
+
+/* Chart axis text — muted, small, monospaced */
+.chart-axis {
+  font-family: var(--mono);
+  font-size: 9px;
+  fill: var(--text-3);
+  letter-spacing: 0.02em;
+}
+.chart-axis-label {
+  font-family: var(--mono);
+  font-size: 8px;
+  fill: var(--text-3);
+}
+
+/* Horizontal bar charts */
+.chart-bar-label {
+  font-family: var(--sans);
+  font-size: 11px;
+  fill: var(--text-1);
+}
+.chart-bar-sub {
+  font-family: var(--mono);
+  font-size: 9px;
+  fill: var(--text-3);
+}
+.chart-val-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  fill: var(--text-2);
+}
+
+/* Donut legend */
+.donut-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 0 15px 14px;
+  font-size: 11px;
+}
+.donut-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--text-2);
+}
+.donut-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+/* Trend chart grid lines */
+.chart-grid { stroke: var(--stroke); stroke-dasharray: 3 4; }
+.chart-zero { stroke: var(--text-3); stroke-dasharray: none; }
+
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 @media print { .topbar, .nav { display: none; } .content { max-width: none; } body { background: #fff; } }

@@ -128,6 +128,7 @@
   // ── nav ──
   const PARTNER_NAV = [
     { id: 'ledger', label: 'Margin ledger' },
+    { id: 'insights', label: 'Insights' },
     { id: 'formulary', label: 'Formulary' },
     { id: 'prescriber', label: 'Prescriber view' },
     { id: 'data', label: 'Import / export' },
@@ -158,9 +159,476 @@
     if (state.role === 'prescriber') return renderPrescriber();
     if (state.view === 'formulary') return renderFormulary();
     if (state.view === 'prescriber') return renderPrescriber();
+    if (state.view === 'insights') return renderInsights();
     if (state.view === 'data') return renderData();
     if (state.view === 'settings') return renderSettings();
     return renderLedger();
+  }
+
+  // ── sample loader (shared by ledger + insights) ──
+  function loadSample() {
+    state.products = sampleProducts();
+    state.formulary = sampleFormulary(state.products);
+    save(KEYS.products, state.products);
+    save(KEYS.formulary, state.formulary);
+    render();
+  }
+
+  // ── chart helpers (pure SVG string builders) ──
+
+  // Safe finite guard — returns 0 for NaN/Infinity
+  function safeN(n) {
+    const v = Number(n);
+    return Number.isFinite(v) ? v : 0;
+  }
+
+  // Clamp a value to [lo, hi]
+  function clamp(v, lo, hi) {
+    return v < lo ? lo : v > hi ? hi : v;
+  }
+
+  // Linear scale: map value in [dMin,dMax] to [rMin,rMax]
+  function scale(v, dMin, dMax, rMin, rMax) {
+    const span = dMax - dMin;
+    if (span === 0) return (rMin + rMax) / 2;
+    return rMin + ((v - dMin) / span) * (rMax - rMin);
+  }
+
+  // Round to "nice" increments for axis labels
+  function niceStep(span, steps) {
+    const raw = span / steps;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    const nice = norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10;
+    return nice * mag;
+  }
+
+  // Generate 3-4 "nice" gridline values spanning [lo, hi]
+  function niceGridlines(lo, hi, count) {
+    count = count || 4;
+    const span = hi - lo;
+    if (span <= 0) return [lo];
+    const step = niceStep(span, count);
+    const start = Math.ceil(lo / step) * step;
+    const lines = [];
+    for (let v = start; v <= hi + step * 0.001; v += step) {
+      lines.push(Math.round(v / step) * step); // avoid float drift
+    }
+    return lines;
+  }
+
+  // Truncate a string to maxLen chars with ellipsis
+  function truncate(s, maxLen) {
+    const str = String(s || '');
+    return str.length > maxLen ? str.slice(0, maxLen - 1) + '…' : str;
+  }
+
+  // ── chart a: margin trend (area + line) ──
+  function chartMarginTrend(history) {
+    const pts = (history || [])
+      .filter((s) => s && typeof s.ym === 'string')
+      .map((s) => ({ ym: s.ym, v: safeN(s.monthlyProfitCurrent) }))
+      .sort((a, b) => a.ym.localeCompare(b.ym));
+
+    if (pts.length < 2) {
+      return `<div class="empty" style="padding:28px 0"><p>Trend appears after two monthly snapshots — open the ledger each month.</p></div>`;
+    }
+
+    const W = 620, H = 180;
+    const PAD = { t: 14, r: 18, b: 40, l: 62 };
+    const cW = W - PAD.l - PAD.r;
+    const cH = H - PAD.t - PAD.b;
+
+    const vals = pts.map((p) => p.v);
+    const rawMin = Math.min(...vals);
+    const rawMax = Math.max(...vals);
+    const span = rawMax - rawMin || 1;
+    const dMin = rawMin - span * 0.08;
+    const dMax = rawMax + span * 0.08;
+
+    const hasNeg = dMin < 0;
+    const gridLines = niceGridlines(dMin, dMax, 4);
+
+    const n = pts.length;
+    const step = cW / Math.max(n - 1, 1);
+
+    function cx(i) { return PAD.l + i * step; }
+    function cy(v) { return PAD.t + cH - scale(v, dMin, dMax, 0, cH); }
+
+    // Points
+    const coords = pts.map((p, i) => [cx(i), cy(p.v)]);
+
+    // Area path
+    const areaD = coords.map(([x, y], i) => (i === 0 ? `M${x},${y}` : `L${x},${y}`)).join(' ') +
+      ` L${coords[n - 1][0]},${cy(0)} L${coords[0][0]},${cy(0)} Z`;
+
+    // Line path
+    const lineD = coords.map(([x, y], i) => (i === 0 ? `M${x},${y}` : `L${x},${y}`)).join(' ');
+
+    // Gridlines + y-axis labels
+    let gridSvg = '';
+    for (const gv of gridLines) {
+      const gy = cy(gv);
+      if (gy < PAD.t - 2 || gy > PAD.t + cH + 2) continue;
+      const isZero = gv === 0;
+      gridSvg += `<line x1="${PAD.l}" y1="${gy.toFixed(1)}" x2="${PAD.l + cW}" y2="${gy.toFixed(1)}" ${isZero ? 'class="chart-zero" stroke-width="1.4"' : 'class="chart-grid" stroke-width="0.8"'}/>`;
+      gridSvg += `<text x="${(PAD.l - 5).toFixed(1)}" y="${(gy + 3).toFixed(1)}" text-anchor="end" class="chart-axis">${esc(gbp0(gv))}</text>`;
+    }
+
+    // X-axis labels (thin out if > 12 points)
+    let xSvg = '';
+    const labelEvery = n <= 12 ? 1 : Math.ceil(n / 12);
+    for (let i = 0; i < n; i++) {
+      if (i % labelEvery !== 0 && i !== n - 1) continue;
+      const lx = coords[i][0];
+      const ly = PAD.t + cH + 14;
+      // Format "2024-03" -> "Mar 24"
+      const raw = pts[i].ym;
+      const parts = raw.split('-');
+      const month = parts[1] ? parseInt(parts[1], 10) : 0;
+      const yr = parts[0] ? parts[0].slice(2) : '';
+      const months = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const label = (months[month] || raw) + ' ' + yr;
+      xSvg += `<text x="${lx.toFixed(1)}" y="${ly}" text-anchor="middle" class="chart-axis">${esc(label)}</text>`;
+    }
+
+    // Dots on each data point
+    const dotsSvg = coords.map(([x, y], i) => {
+      const v = pts[i].v;
+      const fill = v >= 0 ? 'var(--green)' : 'var(--red)';
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${fill}" stroke="var(--panel)" stroke-width="1.5"/>`;
+    }).join('');
+
+    // Zero line if data spans negative
+    const zeroLineSvg = hasNeg && dMin < 0 && dMax > 0
+      ? `<line x1="${PAD.l}" y1="${cy(0).toFixed(1)}" x2="${PAD.l + cW}" y2="${cy(0).toFixed(1)}" class="chart-zero" stroke-width="1.5"/>`
+      : '';
+
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" xmlns="http://www.w3.org/2000/svg" style="display:block;overflow:visible">
+      <defs>
+        <linearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/>
+          <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02"/>
+        </linearGradient>
+      </defs>
+      ${gridSvg}
+      ${zeroLineSvg}
+      <path d="${areaD}" fill="url(#trendGrad)"/>
+      <path d="${lineD}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      ${dotsSvg}
+      ${xSvg}
+    </svg>`;
+  }
+
+  // ── chart b: margin by category (horizontal bars) ──
+  function chartCategoryBars(bd) {
+    if (!bd || bd.length === 0) return '';
+
+    const W = 420, ROW = 38, PAD = { t: 8, l: 130, r: 70, b: 8 };
+    const H = PAD.t + bd.length * ROW + PAD.b;
+    const barW = W - PAD.l - PAD.r;
+
+    const maxAbs = Math.max(...bd.map((r) => Math.abs(safeN(r.monthlyProfitCurrent))), 1);
+
+    let rows = '';
+    for (let i = 0; i < bd.length; i++) {
+      const r = bd[i];
+      const v = safeN(r.monthlyProfitCurrent);
+      const y = PAD.t + i * ROW;
+      const mid = H / 2;
+      const isPos = v >= 0;
+      const barLen = clamp((Math.abs(v) / maxAbs) * barW * 0.88, 2, barW * 0.88);
+      const barX = PAD.l;
+      const barY = y + 8;
+      const barH = 18;
+      const fill = isPos ? 'var(--green)' : 'var(--red)';
+      const valX = barX + barLen + 5;
+      const labelText = esc(truncate(r.label, 18));
+      rows += `
+        <text x="${(PAD.l - 8).toFixed(1)}" y="${(barY + 13).toFixed(1)}" text-anchor="end" class="chart-bar-label">${labelText}</text>
+        <rect x="${barX}" y="${barY}" width="${barLen.toFixed(1)}" height="${barH}" rx="4" fill="${fill}" opacity="0.85"/>
+        <text x="${valX.toFixed(1)}" y="${(barY + 13).toFixed(1)}" text-anchor="start" class="chart-val-label">${esc(gbp0(v))}</text>`;
+    }
+
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" xmlns="http://www.w3.org/2000/svg" style="display:block">${rows}</svg>`;
+  }
+
+  // ── chart c & d: generic horizontal bar chart ──
+  // items: [{ label, subLabel, value, fill }]
+  function chartHBars(items, valFormatter) {
+    if (!items || items.length === 0) return '';
+    const fmt = valFormatter || gbp0;
+    const subLabelPresent = items.some((it) => it.subLabel);
+    const ROW = subLabelPresent ? 44 : 34;
+    const W = 420;
+    const PAD = { t: 8, l: 150, r: 80, b: 8 };
+    const H = PAD.t + items.length * ROW + PAD.b;
+    const barW = W - PAD.l - PAD.r;
+
+    const maxAbs = Math.max(...items.map((it) => Math.abs(safeN(it.value))), 1);
+
+    let rows = '';
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const v = safeN(it.value);
+      const y = PAD.t + i * ROW;
+      const barLen = clamp((Math.abs(v) / maxAbs) * barW * 0.88, 2, barW * 0.88);
+      const barX = PAD.l;
+      const barY = y + (subLabelPresent ? 10 : 8);
+      const barH = 16;
+      const fill = it.fill || (v >= 0 ? 'var(--green)' : 'var(--red)');
+      const valX = barX + barLen + 5;
+      const labelY = barY + 12;
+
+      rows += `<text x="${(PAD.l - 8).toFixed(1)}" y="${labelY.toFixed(1)}" text-anchor="end" class="chart-bar-label" title="${esc(it.label)}">${esc(truncate(it.label, 28))}</text>`;
+      if (it.subLabel) {
+        rows += `<text x="${(PAD.l - 8).toFixed(1)}" y="${(labelY + 13).toFixed(1)}" text-anchor="end" class="chart-bar-sub">${esc(truncate(it.subLabel, 32))}</text>`;
+      }
+      rows += `<rect x="${barX}" y="${barY}" width="${barLen.toFixed(1)}" height="${barH}" rx="4" fill="${fill}" opacity="0.85"/>`;
+      rows += `<text x="${valX.toFixed(1)}" y="${(barY + 12).toFixed(1)}" text-anchor="start" class="chart-val-label">${esc(fmt(v))}</text>`;
+    }
+
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" xmlns="http://www.w3.org/2000/svg" style="display:block">${rows}</svg>`;
+  }
+
+  // ── chart e: spend donut ──
+  function chartSpendDonut(segments) {
+    // segments: [{ label, value, color }]
+    if (!segments || segments.length === 0) return '';
+
+    const total = segments.reduce((s, seg) => s + safeN(seg.value), 0);
+    if (total <= 0) return '';
+
+    const R = 70, r = 42, CX = 110, CY = 90, W = 220, H = 180;
+
+    // Build arcs
+    let startAngle = -Math.PI / 2;
+    let arcs = '';
+    for (const seg of segments) {
+      const v = safeN(seg.value);
+      if (v <= 0) continue;
+      const frac = v / total;
+      const sweep = frac * 2 * Math.PI;
+      const endAngle = startAngle + sweep;
+
+      const x1 = CX + R * Math.cos(startAngle);
+      const y1 = CY + R * Math.sin(startAngle);
+      const x2 = CX + R * Math.cos(endAngle);
+      const y2 = CY + R * Math.sin(endAngle);
+      const ix1 = CX + r * Math.cos(startAngle);
+      const iy1 = CY + r * Math.sin(startAngle);
+      const ix2 = CX + r * Math.cos(endAngle);
+      const iy2 = CY + r * Math.sin(endAngle);
+
+      const largeArc = sweep > Math.PI ? 1 : 0;
+
+      // Full circle if only one segment
+      if (segments.filter((s) => safeN(s.value) > 0).length === 1) {
+        arcs += `<path d="M${CX},${CY - R} A${R},${R} 0 1 1 ${(CX - 0.001).toFixed(3)},${CY - R} Z" fill="${seg.color}" opacity="0.9"/>`;
+        arcs += `<path d="M${CX},${CY - r} A${r},${r} 0 1 0 ${(CX - 0.001).toFixed(3)},${CY - r} Z" fill="var(--panel)" opacity="1"/>`;
+        startAngle = endAngle;
+        continue;
+      }
+
+      arcs += `<path d="M${x1.toFixed(2)},${y1.toFixed(2)} A${R},${R} 0 ${largeArc} 1 ${x2.toFixed(2)},${y2.toFixed(2)} L${ix2.toFixed(2)},${iy2.toFixed(2)} A${r},${r} 0 ${largeArc} 0 ${ix1.toFixed(2)},${iy1.toFixed(2)} Z" fill="${seg.color}" opacity="0.9"/>`;
+      startAngle = endAngle;
+    }
+
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" xmlns="http://www.w3.org/2000/svg" style="display:block">${arcs}</svg>`;
+  }
+
+  // ── INSIGHTS view ──
+  function renderInsights() {
+    const noData = state.products.length === 0 && state.history.length < 2;
+    if (noData) {
+      content.innerHTML = `
+        <h1>Insights</h1>
+        <p class="sub">Margin trend, category breakdown, top earners, switch opportunities and spend mix</p>
+        <div class="panel"><div class="empty">
+          <p><strong>No data yet.</strong> Add products in the Margin ledger, or load the worked example to see charts.</p>
+          <div class="btn-row" style="justify-content:center">
+            <button class="btn btn-primary" data-a="sample">Load worked example</button>
+          </div>
+        </div></div>`;
+      bindAll('[data-a="sample"]', loadSample);
+      return;
+    }
+
+    const t = E.practiceTotals(state.products, state.config);
+    const bd = E.categoryBreakdown(state.products, state.config);
+
+    // All product metrics (for top earners / drains)
+    const allMetrics = state.products.map((p) => E.productMetrics(p, state.config));
+
+    // Top 8 by absolute monthly profit
+    const topEarners = allMetrics
+      .slice()
+      .sort((a, b) => Math.abs(safeN(b.monthlyProfitCurrent)) - Math.abs(safeN(a.monthlyProfitCurrent)))
+      .slice(0, 8)
+      .sort((a, b) => safeN(b.monthlyProfitCurrent) - safeN(a.monthlyProfitCurrent));
+
+    // Switch opportunities (top 8)
+    const topSwitch = (t.switchOpportunities || []).slice(0, 8);
+
+    // Spend donut segments — sum currentCost * monthlyPacks per category
+    const CHART_COLOURS = ['var(--chart1)', 'var(--chart2)', 'var(--chart3)', 'var(--chart4)'];
+    const spendByCategory = new Map();
+    for (const m of allMetrics) {
+      if (m.currentCost == null) continue;
+      const v = safeN(m.currentCost) * safeN(m.monthlyPacks);
+      if (v <= 0) continue;
+      spendByCategory.set(m.category, (spendByCategory.get(m.category) || 0) + v);
+    }
+    const spendTotal = [...spendByCategory.values()].reduce((s, v) => s + v, 0);
+    const spendSegments = [...spendByCategory.entries()]
+      .filter(([, v]) => v > 0)
+      .map(([cat, v], i) => ({
+        label: catLabel(cat),
+        value: v,
+        color: CHART_COLOURS[i % CHART_COLOURS.length],
+      }));
+
+    // ── Panel: margin trend ──
+    const trendSvg = chartMarginTrend(state.history);
+
+    // ── Panel: margin by category ──
+    const catBarsHtml = bd.length > 0 ? chartCategoryBars(bd) : '<div class="empty" style="padding:18px 0"><p>No products yet.</p></div>';
+
+    // ── Panel: top earners & drains ──
+    const earnerItems = topEarners.map((m) => ({
+      label: m.name,
+      value: m.monthlyProfitCurrent,
+      fill: safeN(m.monthlyProfitCurrent) >= 0 ? 'var(--green)' : 'var(--red)',
+    }));
+    const earnersHtml = earnerItems.length > 0
+      ? chartHBars(earnerItems, gbp0)
+      : '<div class="empty" style="padding:18px 0"><p>No priced products.</p></div>';
+
+    // ── Panel: switch opportunities ──
+    const switchItems = topSwitch.map((m) => ({
+      label: m.name,
+      subLabel: truncate(m.current ? m.current.name : '?', 18) + ' → ' + truncate(m.best ? m.best.name : '?', 18),
+      value: m.switchSavingMonthly,
+      fill: 'var(--accent)',
+    }));
+    const switchHtml = switchItems.length > 0
+      ? chartHBars(switchItems, (v) => gbp0(v) + '/mo')
+      : '<div class="empty" style="padding:18px 0"><p>No switch opportunities — all lines are on their cheapest supplier.</p></div>';
+
+    // ── Panel: spend donut ──
+    const donutHtml = buildDonutPanel(spendSegments, spendTotal);
+
+    content.innerHTML = `
+      <h1>Insights</h1>
+      <p class="sub">Margin trend · category breakdown · top earners · switch opportunities · spend mix</p>
+
+      <div class="panel" style="margin-bottom:16px">
+        <h3>Margin trend</h3>
+        <div class="pad" style="padding-top:10px">
+          ${trendSvg}
+        </div>
+      </div>
+
+      <div class="insights-grid">
+        <div class="panel">
+          <h3>Margin by category</h3>
+          <div class="pad" style="padding-top:10px">${catBarsHtml}</div>
+        </div>
+
+        <div class="panel">
+          <h3>Top earners &amp; drains</h3>
+          <div class="pad" style="padding-top:10px">${earnersHtml}</div>
+        </div>
+
+        <div class="panel">
+          <h3>Switch opportunity</h3>
+          <div class="pad" style="padding-top:10px">${switchHtml}</div>
+        </div>
+
+        <div class="panel">
+          <h3>Monthly spend mix</h3>
+          ${donutHtml}
+        </div>
+      </div>`;
+  }
+
+  function buildDonutPanel(segments, total) {
+    if (segments.length === 0 || total <= 0) {
+      return '<div class="empty" style="padding:18px 0"><p>No priced products — enter supplier prices to see spend mix.</p></div>';
+    }
+
+    const donutSvg = chartSpendDonut(segments);
+
+    // Centre label overlay — use an absolutely-positioned element over SVG
+    // We embed it as SVG text instead for self-containment
+    const CX = 110, CY = 90, W = 220, H = 180;
+    const centreLabel = `
+      <svg viewBox="0 0 ${W} ${H}" width="100%" xmlns="http://www.w3.org/2000/svg" style="display:block;position:absolute;top:0;left:0;pointer-events:none">
+        <text x="${CX}" y="${CY - 6}" text-anchor="middle" style="font-family:var(--sans);font-size:15px;font-weight:700;fill:var(--text-1)">${esc(gbp0(total))}</text>
+        <text x="${CX}" y="${CY + 10}" text-anchor="middle" class="chart-axis">spend/mo</text>
+      </svg>`;
+
+    // We'll rebuild as a single SVG with both arcs and centre text
+    // Re-render the donut with centre text included
+    const fullDonutSvg = chartSpendDonutWithLabel(segments, total);
+
+    // Legend
+    const legendHtml = segments.map((seg) => {
+      const pctVal = total > 0 ? Math.round((seg.value / total) * 100) : 0;
+      return `<div class="donut-legend-item"><div class="donut-swatch" style="background:${seg.color}"></div><span>${esc(seg.label)} ${esc(gbp0(seg.value))} (${pctVal}%)</span></div>`;
+    }).join('');
+
+    return `<div class="pad" style="padding-top:10px;padding-bottom:0">
+      ${fullDonutSvg}
+    </div>
+    <div class="donut-legend">${legendHtml}</div>`;
+  }
+
+  function chartSpendDonutWithLabel(segments, total) {
+    if (!segments || segments.length === 0) return '';
+
+    const R = 70, r = 42, CX = 110, CY = 90, W = 220, H = 180;
+
+    const nonZero = segments.filter((s) => safeN(s.value) > 0);
+    if (nonZero.length === 0) return '';
+
+    let startAngle = -Math.PI / 2;
+    let arcs = '';
+
+    if (nonZero.length === 1) {
+      // Full ring for single category
+      const seg = nonZero[0];
+      arcs += `<path d="M${CX},${CY - R} A${R},${R} 0 1 1 ${(CX - 0.001).toFixed(3)},${(CY - R).toFixed(3)} Z" fill="${seg.color}" opacity="0.9"/>`;
+      arcs += `<circle cx="${CX}" cy="${CY}" r="${r}" fill="var(--panel)"/>`;
+    } else {
+      for (const seg of nonZero) {
+        const v = safeN(seg.value);
+        const frac = v / safeN(total);
+        const sweep = frac * 2 * Math.PI;
+        const endAngle = startAngle + sweep;
+
+        const x1 = CX + R * Math.cos(startAngle);
+        const y1 = CY + R * Math.sin(startAngle);
+        const x2 = CX + R * Math.cos(endAngle);
+        const y2 = CY + R * Math.sin(endAngle);
+        const ix1 = CX + r * Math.cos(startAngle);
+        const iy1 = CY + r * Math.sin(startAngle);
+        const ix2 = CX + r * Math.cos(endAngle);
+        const iy2 = CY + r * Math.sin(endAngle);
+        const largeArc = sweep > Math.PI ? 1 : 0;
+
+        arcs += `<path d="M${x1.toFixed(2)},${y1.toFixed(2)} A${R},${R} 0 ${largeArc} 1 ${x2.toFixed(2)},${y2.toFixed(2)} L${ix2.toFixed(2)},${iy2.toFixed(2)} A${r},${r} 0 ${largeArc} 0 ${ix1.toFixed(2)},${iy1.toFixed(2)} Z" fill="${seg.color}" opacity="0.9"/>`;
+        // Gap between segments
+        startAngle = endAngle + 0.025;
+      }
+    }
+
+    const totalStr = esc(gbp0(total));
+    const centre = `
+      <text x="${CX}" y="${CY - 5}" text-anchor="middle" style="font-family:var(--sans);font-size:14px;font-weight:700;fill:var(--text-1)">${totalStr}</text>
+      <text x="${CX}" y="${CY + 11}" text-anchor="middle" class="chart-axis">spend/mo</text>`;
+
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" xmlns="http://www.w3.org/2000/svg" style="display:block">${arcs}${centre}</svg>`;
   }
 
   // ── sparkline ──
@@ -201,13 +669,7 @@
     bindAll('[data-a="add"]', () => editProduct(null));
     bindAll('[data-a="switchall"]', () => switchAll());
     bindAll('[data-a="print"]', () => printReport());
-    bindAll('[data-a="sample"]', () => {
-      state.products = sampleProducts();
-      state.formulary = sampleFormulary(state.products);
-      save(KEYS.products, state.products);
-      save(KEYS.formulary, state.formulary);
-      render();
-    });
+    bindAll('[data-a="sample"]', loadSample);
     content.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => editProduct(b.dataset.edit)));
     content.querySelectorAll('[data-del]').forEach((b) =>
       b.addEventListener('click', () => {
