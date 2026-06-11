@@ -321,5 +321,67 @@ check(Array.isArray(mergedHNull) && mergedHNull.length === 0, 'mergeHistory: non
 check(E.productKeyOf({ name: 'Metformin 500mg', pack: '28 Tablets' }) === 'metformin 500mg 28 tablets', 'productKeyOf: lowercased name + space + lowercased pack');
 check(E.productKeyOf(null) === ' ', 'productKeyOf: null input returns space-separated empty strings');
 
+// ── applyStatement ────────────────────────────────────────────────────────────
+
+const stmtProducts = [
+  { id: 'sp1', name: 'Atorvastatin 20mg', pack: '28', category: 'generic', tariff: 1.43, monthlyPacks: 10,
+    suppliers: [{ name: 'AAH', price: 1.20, quotedAt: '2026-01-01T00:00:00.000Z' }], currentSupplier: 'AAH' },
+  { id: 'sp2', name: 'Metformin 500mg', pack: '28', category: 'generic', tariff: 1.50, monthlyPacks: 5,
+    suppliers: [], currentSupplier: null },
+  { id: 'sp3', name: 'Omeprazole 20mg', pack: '28', category: 'generic', tariff: 0.80, monthlyPacks: 3,
+    suppliers: [], currentSupplier: null },
+];
+
+const stmtQuotedAt = '2026-06-01T00:00:00.000Z';
+
+// 1. Update an existing supplier price + set quotedAt
+const updated = E.applyStatement(stmtProducts, 'AAH', [{ productId: 'sp1', price: 1.10 }], stmtQuotedAt);
+const updatedSp1 = updated.find((p) => p.id === 'sp1');
+const aahEntry = updatedSp1.suppliers.find((s) => s.name === 'AAH');
+check(aahEntry !== undefined && approx(aahEntry.price, 1.10), 'applyStatement: existing supplier price updated');
+check(aahEntry.quotedAt === stmtQuotedAt, 'applyStatement: existing supplier quotedAt updated');
+
+// 2. Add a new supplier with quotedAt
+const withNew = E.applyStatement(stmtProducts, 'Phoenix', [{ productId: 'sp2', price: 1.35 }], stmtQuotedAt);
+const withNewSp2 = withNew.find((p) => p.id === 'sp2');
+const phoenixEntry = withNewSp2.suppliers.find((s) => s.name === 'Phoenix');
+check(phoenixEntry !== undefined && approx(phoenixEntry.price, 1.35), 'applyStatement: new supplier added');
+check(phoenixEntry.quotedAt === stmtQuotedAt, 'applyStatement: new supplier gets quotedAt');
+
+// 3. Unmatched products untouched
+const sp3After = withNew.find((p) => p.id === 'sp3');
+check(sp3After.suppliers.length === 0, 'applyStatement: unmatched product untouched');
+
+// 4. Does not mutate inputs
+const stmtBefore = JSON.stringify(stmtProducts);
+E.applyStatement(stmtProducts, 'AAH', [{ productId: 'sp1', price: 0.99 }], stmtQuotedAt);
+check(JSON.stringify(stmtProducts) === stmtBefore, 'applyStatement: does not mutate input array');
+
+// 5. Blank supplierName is a no-op
+const blankResult = E.applyStatement(stmtProducts, '  ', [{ productId: 'sp1', price: 0.01 }], stmtQuotedAt);
+check(JSON.stringify(blankResult) === JSON.stringify(stmtProducts.map((p) => Object.assign({}, p))), 'applyStatement: blank supplierName is no-op');
+
+// ── applyVolumes ──────────────────────────────────────────────────────────────
+
+const volProducts = [
+  { id: 'vp1', name: 'Atorvastatin 20mg', pack: '28', category: 'generic', tariff: 1.43, monthlyPacks: 0, suppliers: [] },
+  { id: 'vp2', name: 'Metformin 500mg', pack: '28', category: 'generic', tariff: 1.50, monthlyPacks: 0, suppliers: [] },
+];
+
+// Sets monthlyPacks, rounds and clamps negatives to 0
+const volResult = E.applyVolumes(volProducts, [
+  { productId: 'vp1', qty: 12.7 },   // rounds to 13
+  { productId: 'vp2', qty: -5 },      // clamped to 0
+]);
+const vp1After = volResult.find((p) => p.id === 'vp1');
+const vp2After = volResult.find((p) => p.id === 'vp2');
+check(vp1After.monthlyPacks === 13, 'applyVolumes: qty rounded to nearest integer');
+check(vp2After.monthlyPacks === 0, 'applyVolumes: negative qty clamped to 0');
+
+// Does not mutate inputs
+const volBefore = JSON.stringify(volProducts);
+E.applyVolumes(volProducts, [{ productId: 'vp1', qty: 99 }]);
+check(JSON.stringify(volProducts) === volBefore, 'applyVolumes: does not mutate input array');
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) process.exit(1);

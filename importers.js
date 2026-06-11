@@ -343,8 +343,10 @@
   }
 
   // ── detectColumns ────────────────────────────────────────────────────────────
-  // kind: 'tariff' | 'concession' | 'generic'
-  // Returns { name, pack, price, pence } — each is a column index or null.
+  // kind: 'tariff' | 'concession' | 'generic' | 'statement' | 'volume'
+  // For 'statement': Returns { name, pack, price, pence }
+  // For 'volume':    Returns { name, pack, qty, pence: false }
+  // Others:         Returns { name, pack, price, pence }
   function detectColumns(headerRow, kind) {
     const headers = (headerRow || []).map((h) => String(h || '').toLowerCase().trim());
 
@@ -357,22 +359,46 @@
 
     let nameCol = null;
     let packCol = null;
-    let priceCol = null;
     let pence = false;
 
     if (kind === 'tariff' || kind === 'concession' || kind === 'generic') {
       nameCol = find(['medicine', 'drug', 'name', 'description']);
       packCol = find(['pack', 'size', 'quantity', 'qty']);
-      priceCol = find(['price', 'tariff', 'basic', 'concession']);
+      const priceCol = find(['price', 'tariff', 'basic', 'concession']);
 
       // pence detection from header
       if (priceCol !== null) {
         const ph = headers[priceCol];
         if (ph.includes('(p)') || ph.includes('pence')) pence = true;
       }
+
+      return { name: nameCol, pack: packCol, price: priceCol, pence };
     }
 
-    return { name: nameCol, pack: packCol, price: priceCol, pence };
+    if (kind === 'statement') {
+      nameCol = find(['description', 'product description', 'item', 'medicine', 'drug', 'name']);
+      packCol = find(['pack size', 'pack', 'size']);
+      const priceCol = find(['trade price', 'net price', 'unit price', 'cost', 'price', 'tariff', 'basic', 'concession']);
+
+      // pence detection from header
+      if (priceCol !== null) {
+        const ph = headers[priceCol];
+        if (ph.includes('(p)') || ph.includes('pence')) pence = true;
+      }
+
+      return { name: nameCol, pack: packCol, price: priceCol, pence };
+    }
+
+    if (kind === 'volume') {
+      nameCol = find(['bnf name', 'presentation', 'medicine', 'drug', 'name', 'description']);
+      packCol = find(['pack size', 'pack', 'size']);
+      const qtyCol = find(['quantity', 'qty', 'items', 'packs', 'volume', 'number of']);
+
+      return { name: nameCol, pack: packCol, qty: qtyCol, pence: false };
+    }
+
+    // Fallback for unknown kinds
+    return { name: null, pack: null, price: null, pence: false };
   }
 
   // Detect pence from sampled values (integer-only and large median > 500)
@@ -429,6 +455,37 @@
       if (!Number.isFinite(price)) continue;
 
       result.push({ name, pack, price });
+    }
+    return result;
+  }
+
+  // ── extractVolumeRows ─────────────────────────────────────────────────────────
+  // mapping = { name, pack, qty, headerRows }  (pack may be null)
+  // Returns [{ name, pack, qty }] where qty is a non-negative integer.
+  // Skips rows with empty name or non-finite qty.
+  function extractVolumeRows(grid, mapping) {
+    const headerRows = mapping.headerRows != null ? mapping.headerRows : 1;
+    const nameCol = mapping.name;
+    const packCol = mapping.pack != null ? mapping.pack : null;
+    const qtyCol = mapping.qty;
+
+    const result = [];
+    for (let r = headerRows; r < grid.length; r++) {
+      const row = grid[r] || [];
+      const name = nameCol !== null ? String(row[nameCol] || '').trim() : '';
+      if (!name) continue;
+
+      const pack = packCol !== null ? String(row[packCol] || '').trim() : '';
+
+      let rawQty = '';
+      if (qtyCol !== null) rawQty = String(row[qtyCol] || '').trim();
+
+      const n = Number(rawQty.replace(/[,\s]/g, ''));
+      if (!Number.isFinite(n)) continue;
+
+      const qty = Math.max(0, Math.round(n));
+
+      result.push({ name, pack, qty });
     }
     return result;
   }
@@ -676,6 +733,7 @@
     gridFromCsv,
     detectColumns,
     extractRows,
+    extractVolumeRows,
     normaliseName,
     matchRows,
     parseConcessions,

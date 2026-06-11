@@ -542,6 +542,63 @@
     return result;
   }
 
+  // ── applyStatement ─────────────────────────────────────────────────────────
+  // proposals = [{ productId, price }]
+  // Returns a NEW products array with supplier entries upserted for supplierName.
+  // Never mutates inputs. Empty/blank supplierName returns products unchanged.
+  function applyStatement(products, supplierName, proposals, quotedAt) {
+    const list = Array.isArray(products) ? products : [];
+    const name = String(supplierName == null ? '' : supplierName).trim();
+    if (!name) return list.slice();
+
+    const stamp = typeof quotedAt === 'string' && quotedAt ? quotedAt : new Date().toISOString();
+
+    // Build a lookup map: productId -> proposal
+    const byId = new Map();
+    for (const p of (Array.isArray(proposals) ? proposals : [])) {
+      if (p && p.productId != null) byId.set(String(p.productId), p);
+    }
+
+    return list.map((product) => {
+      if (!product) return product;
+      const prop = byId.get(String(product.id));
+      if (!prop) return Object.assign({}, product);
+
+      const suppliers = Array.isArray(product.suppliers) ? product.suppliers.slice() : [];
+      const idx = suppliers.findIndex((s) => String((s && s.name) || '').trim() === name);
+      if (idx >= 0) {
+        // Update existing supplier entry
+        suppliers[idx] = Object.assign({}, suppliers[idx], { price: prop.price, quotedAt: stamp });
+      } else {
+        // Add new supplier entry
+        suppliers.push({ name, price: prop.price, quotedAt: stamp });
+      }
+      return Object.assign({}, product, { suppliers });
+    });
+  }
+
+  // ── applyVolumes ────────────────────────────────────────────────────────────
+  // proposals = [{ productId, qty }]
+  // Returns a NEW products array with monthlyPacks set on matched products.
+  // Never mutates inputs.
+  function applyVolumes(products, proposals) {
+    const list = Array.isArray(products) ? products : [];
+
+    const byId = new Map();
+    for (const p of (Array.isArray(proposals) ? proposals : [])) {
+      if (p && p.productId != null) byId.set(String(p.productId), p);
+    }
+
+    return list.map((product) => {
+      if (!product) return product;
+      const prop = byId.get(String(product.id));
+      if (!prop) return Object.assign({}, product);
+
+      const qty = Math.max(0, Math.round(Number(prop.qty)));
+      return Object.assign({}, product, { monthlyPacks: qty });
+    });
+  }
+
   // Merge two snapshot history arrays. Union by ym; incoming wins on collision.
   // Result is sorted ascending by ym and capped to the last `cap` entries (default 24).
   // Inputs are never mutated.
@@ -590,5 +647,7 @@
     mergeProducts,
     mergeFormulary,
     mergeHistory,
+    applyStatement,
+    applyVolumes,
   };
 });

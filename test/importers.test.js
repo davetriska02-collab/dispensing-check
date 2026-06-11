@@ -437,6 +437,74 @@ const storedXlsx = buildZip([
   check(tabRows[0].name === 'Lisinopril 10mg', 'parseConcessions tab: name correct');
   check(approx(tabRows[0].price, 0.95), 'parseConcessions tab: price correct');
 
+  // ── detectColumns — 'statement' kind ─────────────────────────────────────────
+  const stmtHeaders = ['Product Description', 'Pack Size', 'Trade Price'];
+  const stmtMap = I.detectColumns(stmtHeaders, 'statement');
+  check(stmtMap.name === 0, 'detectColumns statement: name col found (Product Description)');
+  check(stmtMap.pack === 1, 'detectColumns statement: pack col found (Pack Size)');
+  check(stmtMap.price === 2, 'detectColumns statement: price col found (Trade Price)');
+  check(stmtMap.pence === false, 'detectColumns statement: pence false for pounds price');
+
+  // statement with pence header
+  const stmtPenceHeaders = ['Item', 'Pack', 'Net Price (p)'];
+  const stmtPenceMap = I.detectColumns(stmtPenceHeaders, 'statement');
+  check(stmtPenceMap.name === 0, 'detectColumns statement pence: name col (Item)');
+  check(stmtPenceMap.price === 2, 'detectColumns statement pence: price col found');
+  check(stmtPenceMap.pence === true, 'detectColumns statement pence: pence true from (p) in header');
+
+  // ── detectColumns — 'volume' kind ─────────────────────────────────────────────
+  const volHeaders = ['BNF Name', 'Quantity'];
+  const volMap = I.detectColumns(volHeaders, 'volume');
+  check(volMap.name === 0, 'detectColumns volume: name col found (BNF Name)');
+  check(volMap.pack === null, 'detectColumns volume: pack null when no pack column');
+  check(volMap.qty === 1, 'detectColumns volume: qty col found (Quantity)');
+  check(volMap.pence === false, 'detectColumns volume: pence always false');
+
+  // volume with Presentation + Pack + Items
+  const volHeaders2 = ['Presentation', 'Pack', 'Items'];
+  const volMap2 = I.detectColumns(volHeaders2, 'volume');
+  check(volMap2.name === 0, 'detectColumns volume: name col found (Presentation)');
+  check(volMap2.pack === 1, 'detectColumns volume: pack col found (Pack)');
+  check(volMap2.qty === 2, 'detectColumns volume: qty col found (Items)');
+
+  // ── extractVolumeRows ─────────────────────────────────────────────────────────
+  const volGrid = [
+    ['BNF Name', 'Quantity'],
+    ['Atorvastatin 20mg tablets', '150'],
+    ['Metformin 500mg tablets', '75.6'],   // rounds to 76
+    ['Omeprazole 20mg capsules', '-3'],    // clamps to 0
+    ['', '100'],                           // empty name — skip
+    ['Ramipril 5mg tablets', 'abc'],       // non-finite — skip
+  ];
+  const volRows = I.extractVolumeRows(volGrid, { name: 0, pack: null, qty: 1, headerRows: 1 });
+  check(volRows.length === 3, 'extractVolumeRows: 3 valid rows (skips empty name and non-finite qty)');
+  check(volRows[0].name === 'Atorvastatin 20mg tablets', 'extractVolumeRows: name correct');
+  check(volRows[0].pack === '', 'extractVolumeRows: pack empty when mapping.pack is null');
+  check(volRows[0].qty === 150, 'extractVolumeRows: qty integer');
+  check(volRows[1].qty === 76, 'extractVolumeRows: fractional qty rounded');
+  check(volRows[2].qty === 0, 'extractVolumeRows: negative qty clamped to 0');
+
+  // extractVolumeRows with pack column
+  const volGridPack = [
+    ['Presentation', 'Pack', 'Items'],
+    ['Lisinopril 10mg tablets', '28', '200'],
+  ];
+  const volRowsPack = I.extractVolumeRows(volGridPack, { name: 0, pack: 1, qty: 2, headerRows: 1 });
+  check(volRowsPack.length === 1, 'extractVolumeRows with pack: 1 row');
+  check(volRowsPack[0].pack === '28', 'extractVolumeRows with pack: pack value present');
+  check(volRowsPack[0].qty === 200, 'extractVolumeRows with pack: qty correct');
+
+  // ── matchRows works on volume rows (no price field) ───────────────────────────
+  const volProductsForMatch = [
+    { id: 'vm1', name: 'Atorvastatin 20mg', pack: '28 tablets' },
+  ];
+  const volRowsForMatch = [
+    { name: 'Atorvastatin 20mg tablets', pack: '28', qty: 150 },
+  ];
+  const volMatchProposals = I.matchRows(volProductsForMatch, volRowsForMatch);
+  check(volMatchProposals.length === 1, 'matchRows: works on volume rows (qty field, no price)');
+  check(volMatchProposals[0].productId === 'vm1', 'matchRows: volume row matched to correct product');
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   if (fail > 0) process.exit(1);
 })();
