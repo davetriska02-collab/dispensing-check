@@ -152,6 +152,7 @@
     { id: 'prescriber', label: 'Prescriber view' },
     { id: 'data', label: 'Import / export' },
     { id: 'settings', label: 'Settings' },
+    { id: 'ig', label: 'Data & IG' },
   ];
 
   function renderNav() {
@@ -182,6 +183,7 @@
     if (state.view === 'insights') return renderInsights();
     if (state.view === 'data') return renderData();
     if (state.view === 'settings') return renderSettings();
+    if (state.view === 'ig') return renderIg();
     return renderLedger();
   }
 
@@ -838,7 +840,7 @@
       <p class="sub">${esc(rate)} · ${t.pricedCount}/${t.productCount} products priced</p>
       <div class="btn-row">
         <button class="btn btn-primary" data-a="add">+ Product</button>
-        ${t.switchableCount ? `<button class="btn" data-a="switchall">Switch all → save ${gbp0(t.switchSavingMonthly)}/mo</button>` : ''}
+        ${t.switchableCount ? `<button class="btn" data-a="switchall">Switch all &rarr; save ${gbp0(t.switchSavingMonthly)}/mo</button><button class="btn" data-a="switchlistprint">Switch list</button><button class="btn" data-a="switchlistcsv">Switch CSV</button>` : ''}
         <button class="btn" data-a="print">Board report</button>
         ${state.products.length ? '' : '<button class="btn" data-a="sample">Load worked example</button>'}
       </div>
@@ -852,6 +854,8 @@
 
     bindAll('[data-a="add"]', () => editProduct(null));
     bindAll('[data-a="switchall"]', () => switchAll());
+    bindAll('[data-a="switchlistprint"]', () => { const t2 = E.practiceTotals(state.products, state.config); printSwitchList(t2); });
+    bindAll('[data-a="switchlistcsv"]', () => { const t2 = E.practiceTotals(state.products, state.config); switchListCsv(t2); });
     bindAll('[data-a="print"]', () => printReport());
     bindAll('[data-a="sample"]', loadSample);
 
@@ -1248,12 +1252,17 @@
         <div class="btn-row"><button class="btn" data-a="impcsv">Import CSV</button><button class="btn" data-a="expcsv">Export CSV</button></div>
       </div></div>
       <div class="panel"><h3>Full backup (JSON)</h3><div class="pad"><div class="btn-row"><button class="btn" data-a="impjson">Import JSON</button><button class="btn" data-a="expjson">Export JSON</button></div></div></div>
+      <div class="panel"><div class="pad">
+        <p class="note">No patient data is stored or transmitted by this tool. All data lives in this browser only.</p>
+        <div class="btn-row" style="margin-top:8px"><button class="btn" data-a="goig">Data &amp; IG statement</button></div>
+      </div></div>
       <input type="file" id="fcsv" accept=".csv,text/csv" style="display:none" />
       <input type="file" id="fjson" accept=".json,application/json" style="display:none" />`;
     const fcsv = $('#fcsv'), fjson = $('#fjson');
     bindMaybe('[data-a="impcsv"]', () => fcsv.click());
     bindMaybe('[data-a="expcsv"]', () => download(E.toCsv(state.products), `dispensing-margin-${today()}.csv`, 'text/csv'));
     bindMaybe('[data-a="impjson"]', () => fjson.click());
+    bindMaybe('[data-a="goig"]', () => { state.view = 'ig'; render(); });
     bindMaybe('[data-a="expjson"]', () =>
       download(JSON.stringify({ products: state.products, formulary: state.formulary, config: state.config, history: state.history }, null, 2), `dispensing-check-backup-${today()}.json`, 'application/json')
     );
@@ -1415,6 +1424,172 @@
       state.view = 'ledger';
       render();
     });
+  }
+
+  // ── switch list helpers ──
+  function csvCell(v) {
+    const s = String(v == null ? '' : v);
+    if (/^[=+\-@\t\r]/.test(s)) return '"\''+s.replace(/"/g,'""')+'"';
+    if (s.includes(',') || s.includes('"') || s.includes('\n')) return '"'+s.replace(/"/g,'""')+'"';
+    return s;
+  }
+
+  function switchListCsv(t) {
+    const rows = (t.switchOpportunities || []).map((m) => [
+      csvCell(m.name),
+      csvCell(m.pack || ''),
+      csvCell(m.current ? m.current.name : ''),
+      csvCell(m.currentCost != null ? m.currentCost.toFixed(2) : ''),
+      csvCell(m.best ? m.best.name : ''),
+      csvCell(m.bestCost != null ? m.bestCost.toFixed(2) : ''),
+      csvCell(m.monthlyPacks != null ? m.monthlyPacks : ''),
+      csvCell(m.switchSavingMonthly != null ? m.switchSavingMonthly.toFixed(2) : ''),
+      csvCell(m.switchSavingAnnual != null ? m.switchSavingAnnual.toFixed(2) : ''),
+    ].join(','));
+    const header = 'product,pack,from supplier,from price,to supplier,to price,packs/mo,saving/mo,saving/yr';
+    download([header].concat(rows).join('\r\n'), `switch-list-${today()}.csv`, 'text/csv');
+  }
+
+  function printSwitchList(t) {
+    const date = new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
+    const opps = t.switchOpportunities || [];
+    if (!opps.length) { alert('No switch opportunities to print.'); return; }
+
+    // Group by target wholesaler name
+    const grouped = new Map();
+    for (const m of opps) {
+      const key = m.best ? m.best.name : 'Unknown';
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(m);
+    }
+
+    let tablesSvg = '';
+    let grandMonthly = 0, grandAnnual = 0;
+    for (const [supplier, lines] of grouped) {
+      const subtotalMonthly = lines.reduce((s, m) => s + (m.switchSavingMonthly || 0), 0);
+      const subtotalAnnual = lines.reduce((s, m) => s + (m.switchSavingAnnual || 0), 0);
+      grandMonthly += subtotalMonthly;
+      grandAnnual += subtotalAnnual;
+      const bodyRows = lines.map((m) => `<tr>
+        <td>${esc(m.name)}</td>
+        <td>${esc(m.pack || '')}</td>
+        <td>${esc(m.current ? m.current.name : '?')}</td>
+        <td class="r">${m.currentCost != null ? gbp(m.currentCost) : '?'}</td>
+        <td class="r">${m.bestCost != null ? gbp(m.bestCost) : '?'}</td>
+        <td class="r">${m.monthlyPacks != null ? m.monthlyPacks : '?'}</td>
+        <td class="r">${gbp(m.switchSavingMonthly)}</td>
+      </tr>`).join('');
+      tablesSvg += `
+        <h2>Switch to: ${esc(supplier)}</h2>
+        <table>
+          <thead><tr><th>Product</th><th>Pack</th><th>Current supplier</th><th class="r">From</th><th class="r">To</th><th class="r">Packs/mo</th><th class="r">Saving/mo</th></tr></thead>
+          <tbody>${bodyRows}</tbody>
+          <tfoot><tr class="subtotal"><td colspan="6">Subtotal — ${esc(supplier)}</td><td class="r">${gbp(subtotalMonthly)}</td></tr></tfoot>
+        </table>`;
+    }
+
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Switch list -- ${esc(date)}</title><style>
+      body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0f172a;margin:32px;font-size:13px}
+      h1{font-size:20px;margin:0 0 2px}.s{color:#475569;font-size:12px;margin:0 0 18px}
+      .grand{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:20px;padding:12px 14px;border:1px solid #cbd5e1;border-radius:10px}
+      .grand .l{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#475569}.grand .v{font-size:20px;font-weight:700;margin-top:4px;color:#16a34a}
+      h2{font-size:14px;margin:18px 0 8px;border-bottom:1px solid #cbd5e1;padding-bottom:4px}
+      table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:16px}
+      th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #e2e8f0}
+      .r{text-align:right}
+      tfoot .subtotal td{font-weight:700;border-top:1px solid #94a3b8;border-bottom:none}
+      .f{margin-top:24px;color:#64748b;font-size:10px}
+    </style></head><body>
+      <h1>Switch list</h1>
+      <p class="s">${esc(state.practiceName || 'Practice')} &middot; ${esc(date)} &middot; ${opps.length} line(s)</p>
+      <div class="grand">
+        <div><div class="l">Total saving / month</div><div class="v">${gbp0(grandMonthly)}</div></div>
+        <div><div class="l">Total saving / year</div><div class="v">${gbp0(grandAnnual)}</div></div>
+      </div>
+      ${tablesSvg}
+      <p class="f">Generated by Dispensing Check. Switch to the cheapest supplier on file for each line. Prices entered by the practice; verify with wholesalers before ordering.</p>
+      <script>window.onload=function(){setTimeout(function(){window.print();},200);};<\/script></body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) { alert('Please allow pop-ups to open the printable switch list.'); return; }
+    w.document.write(html);
+    w.document.close();
+  }
+
+  // ── IG one-pager ──
+  function renderIg() {
+    content.innerHTML = `
+      <h1>Information governance statement</h1>
+      <p class="sub">What this tool stores, where it lives, and what that means for your practice</p>
+
+      <div class="panel"><div class="pad">
+        <h3 style="font-size:0.86rem;text-transform:none;letter-spacing:0;color:var(--text-1);padding:0 0 8px">What this tool stores</h3>
+        <p class="note">Dispensing Check stores the following in your browser's <code>localStorage</code>:</p>
+        <ul class="note" style="margin:6px 0;padding-left:18px">
+          <li>Product names, pack sizes, Drug Tariff prices and supplier quotes you enter</li>
+          <li>Monthly pack volumes</li>
+          <li>Formulary entries (preferred drugs and clinically-equivalent alternatives)</li>
+          <li>App settings: clawback model, margin thresholds, practice name, partner PIN</li>
+          <li>Monthly margin snapshots (totals only, for the trend chart)</li>
+        </ul>
+        <p class="note">This is <strong>commercial data only</strong> — prices, margins and purchasing information.</p>
+      </div></div>
+
+      <div class="panel"><div class="pad">
+        <h3 style="font-size:0.86rem;text-transform:none;letter-spacing:0;color:var(--text-1);padding:0 0 8px">What it never stores</h3>
+        <p class="note">Dispensing Check has <strong>no patient data</strong> of any kind. It does not store, process or display:</p>
+        <ul class="note" style="margin:6px 0;padding-left:18px">
+          <li>Patient names, NHS numbers or dates of birth</li>
+          <li>Clinical records, diagnoses or prescription history</li>
+          <li>Prescriber identifiers</li>
+          <li>Any data from your clinical system</li>
+        </ul>
+      </div></div>
+
+      <div class="panel"><div class="pad">
+        <h3 style="font-size:0.86rem;text-transform:none;letter-spacing:0;color:var(--text-1);padding:0 0 8px">Where data lives</h3>
+        <p class="note">All data is stored in <code>localStorage</code> in <strong>this browser on this device</strong>. Nothing is transmitted anywhere:</p>
+        <ul class="note" style="margin:6px 0;padding-left:18px">
+          <li>No cloud storage, no server, no database outside this browser</li>
+          <li>No analytics, no tracking, no third-party scripts</li>
+          <li>The app makes <strong>zero network requests</strong> after the page has loaded</li>
+        </ul>
+        <p class="note">Data does not leave the device unless you deliberately export it (JSON backup or CSV).</p>
+      </div></div>
+
+      <div class="panel"><div class="pad">
+        <h3 style="font-size:0.86rem;text-transform:none;letter-spacing:0;color:var(--text-1);padding:0 0 8px">What this means for governance</h3>
+        <p class="note">Because no patient data is held or transmitted, this tool does not create a patient data flow and is not subject to DSPT assessment on that basis. However:</p>
+        <ul class="note" style="margin:6px 0;padding-left:18px">
+          <li>Practices should still follow local information governance policy for commercial data</li>
+          <li>The commercial data stored here (prices, margins) may be practice-sensitive; treat it accordingly</li>
+          <li>This statement reflects the architecture as written; it is not a formal IG compliance certificate</li>
+        </ul>
+      </div></div>
+
+      <div class="panel"><div class="pad">
+        <h3 style="font-size:0.86rem;text-transform:none;letter-spacing:0;color:var(--text-1);padding:0 0 8px">Backups</h3>
+        <p class="note">Browser <code>localStorage</code> is not backed up automatically. Use <strong>Import / export &rarr; Export JSON</strong> to save a full backup. We recommend exporting monthly and storing the file on your practice shared drive. If the browser profile is cleared, data in <code>localStorage</code> is lost.</p>
+        <div class="btn-row" style="margin-top:10px">
+          <button class="btn" data-a="godata">Go to Import / export</button>
+        </div>
+      </div></div>
+
+      <div class="panel"><div class="pad">
+        <h3 style="font-size:0.86rem;text-transform:none;letter-spacing:0;color:var(--text-1);padding:0 0 8px">Shared workstations</h3>
+        <p class="note">The partner PIN (set in Settings) is a <strong>soft gate</strong> that keeps prices and margins out of the prescriber view by default on shared machines. It is not a strong security control and does not encrypt data in storage. If the workstation is shared with non-clinical staff, consider who has access to the browser profile.</p>
+      </div></div>
+
+      <div class="panel"><div class="pad">
+        <h3 style="font-size:0.86rem;text-transform:none;letter-spacing:0;color:var(--text-1);padding:0 0 8px">Verify it yourself</h3>
+        <p class="note">You do not have to take this statement on trust:</p>
+        <ul class="note" style="margin:6px 0;padding-left:18px">
+          <li>Open browser DevTools (F12) and go to the <strong>Network</strong> tab. After the page loads, no requests appear -- the app makes no network calls at runtime</li>
+          <li>The source code (<code>app.js</code>, <code>engine.js</code>) is unminified, readable JavaScript. There are no obfuscated sections</li>
+          <li>DevTools &rarr; Application &rarr; Local Storage shows exactly what is stored under the <code>dc.*</code> keys</li>
+        </ul>
+      </div></div>`;
+
+    bindMaybe('[data-a="godata"]', () => { state.view = 'data'; render(); });
   }
 
   // ── board report (print) ──

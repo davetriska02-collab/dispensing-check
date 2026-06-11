@@ -10,7 +10,8 @@ alternative to RxMargin. It does two jobs from one shared dataset:
    finds the cheapest supplier on file, flags loss-making lines, and totals the
    cash freed by switching — with a category breakdown, RAG margin-health bands,
    cost-per-unit comparison, a margin trend sparkline, a one-click "switch all to
-   cheapest supplier" action, search / category / status filters, sortable
+   cheapest supplier" action, a switch-list export (printable sheet and CSV,
+   grouped by target wholesaler), search / category / status filters, sortable
    columns, and a printable board report.
 
 2. **Insights (visual dashboard).** Hand-rolled, dependency-free SVG charts:
@@ -89,6 +90,19 @@ marks the supplier in use.
   `prescriberFormulary()`, which strips every commercial field before render.
 - Always verify clawback figures and reimbursement routes against the current
   Drug Tariff before acting.
+
+## Information governance
+
+Dispensing Check stores **commercial data only** (prices, supplier quotes,
+formulary, settings, monthly margin snapshots) in `localStorage` in this browser
+on this device. It holds no patient data, no NHS numbers and no clinical records.
+Nothing is transmitted: the app makes zero network requests after page load, with
+no cloud storage, no analytics and no third-party scripts. Because no patient data
+is held or transmitted, this tool does not create a patient data flow requiring
+DSPT assessment; practices should still follow local policy for commercial data.
+Use **Import / export → Export JSON** for backups. The in-app **Data & IG**
+page covers all of this in detail and explains how to verify it yourself in
+browser DevTools.
 
 ## Status
 

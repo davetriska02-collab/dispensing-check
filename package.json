@@ -4,6 +4,6 @@
   "private": true,
   "description": "Offline dispensing-margin + price-blind prescriber formulary tool for UK dispensing GP practices.",
   "scripts": {
-    "test": "node test/engine.test.js"
+    "test": "node test/engine.test.js && node test/importers.test.js"
   }
 }

@@ -83,7 +83,10 @@
       .map((s) => ({ name: String((s && s.name) || '').trim(), price: priceValue(s && s.price) }))
       .filter((s) => s.name !== '' && s.price !== null);
 
-    const tariff = num(product && product.tariff);
+    const tariffBase = num(product && product.tariff);
+    const concessionPriceVal = priceValue(product && product.concessionPrice);
+    const onConcession = concessionPriceVal !== null && Number.isFinite(concessionPriceVal) && concessionPriceVal > 0;
+    const tariff = onConcession ? concessionPriceVal : tariffBase;
     const monthlyPacks = Math.max(0, num(product && product.monthlyPacks));
     const rate = deductionRateFor(product && product.category, cfg);
     const netReimb = tariff * (1 - rate);
@@ -123,6 +126,8 @@
       pack: String((product && product.pack) || '').trim(),
       category: (product && product.category) || 'generic',
       tariff,
+      tariffBase,
+      onConcession,
       monthlyPacks,
       rate,
       netReimb,
@@ -430,6 +435,8 @@
     prescriberFormulary,
     upsertSnapshot,
     ymKeyOf,
+    splitCsvRows,
+    parseMoney,
     parseCsv,
     toCsv,
     makeId,

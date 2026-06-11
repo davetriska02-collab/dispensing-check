@@ -174,5 +174,32 @@ check(negBack.length === 1, 'toCsv negative tariff round-trip: one product');
 check(negBack[0].tariff === -5, 'toCsv negative tariff round-trip: tariff is -5');
 check(negBack[0].suppliers[0].price === -1.5, 'toCsv negative tariff round-trip: price is -1.5');
 
+// ── concession price support ─────────────────────────────────────────────────
+// A product that is a loss-maker at base tariff becomes profitable at concession.
+const lossAtBase = {
+  id: 'c1', name: 'LossAtBase 10mg', pack: '28', category: 'generic',
+  tariff: 1.00, // base tariff — buying at 0.95 costs more than netReimb
+  concessionPrice: 1.50, // concession overrides tariff
+  monthlyPacks: 30,
+  suppliers: [{ name: 'SupA', price: 0.95 }], currentSupplier: 'SupA',
+};
+const mc = E.productMetrics(lossAtBase, C);
+check(mc.onConcession === true, 'concession: onConcession true when concessionPrice set');
+check(mc.tariffBase === 1.00, 'concession: tariffBase is the original tariff');
+check(approx(mc.tariff, 1.50), 'concession: tariff (effective) equals concessionPrice');
+check(approx(mc.netReimb, 1.50 * (1 - 0.1118)), 'concession: netReimb uses concession price');
+check(mc.lossMaker === false, 'concession: product profitable at concession price (not a loss-maker)');
+// Verify the product WAS a loss-maker at base tariff
+const mcBase = E.productMetrics(Object.assign({}, lossAtBase, { concessionPrice: null }), C);
+check(mcBase.lossMaker === true, 'concession: same product IS a loss-maker at base tariff (control)');
+
+// null / empty / zero concessionPrice is ignored (falls back to tariff)
+const nullConc = E.productMetrics(Object.assign({}, lossAtBase, { concessionPrice: null }), C);
+check(nullConc.onConcession === false && approx(nullConc.tariff, 1.00), 'concession: null concessionPrice ignored');
+const emptyConc = E.productMetrics(Object.assign({}, lossAtBase, { concessionPrice: '' }), C);
+check(emptyConc.onConcession === false && approx(emptyConc.tariff, 1.00), 'concession: empty string concessionPrice ignored');
+const zeroConc = E.productMetrics(Object.assign({}, lossAtBase, { concessionPrice: 0 }), C);
+check(zeroConc.onConcession === false && approx(zeroConc.tariff, 1.00), 'concession: zero concessionPrice ignored');
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) process.exit(1);
