@@ -344,6 +344,18 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .sortable-th:hover { color: var(--text-1); }
 .sort-active { color: var(--accent) !important; }
 
+/* Visible :focus-visible outline for interactive elements (accent colour, 2px + offset) */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+.sortable-th:focus-visible,
+.accent-swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
 /* Danger zone button */
 .btn-danger {
   color: var(--red) !important;
@@ -422,6 +434,28 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 .modal-import-table tbody tr:last-child td { border-bottom: none; }
 .modal-import-table tbody tr:hover { background: var(--accent-soft); }
+
+/* ── Contrast fixes (WCAG AA) ──────────────────────────────────────────────
+   Dark: flag.switch accent text was 4.12 on accent-soft bg — bumped to #7aa3ff (5.28).
+   Dark: amber .btn-primary / .seg active white text was 2.15 — switched to dark text.
+   Light: band-good/watch/poor badge text on tinted bg failed (2.74/3.90/3.75) —
+          overridden with darker shades (#14532d / #92400e / #991b1b giving 7.57/5.50/6.46).
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* flag.switch: dark theme accent text on accent-soft bg was 4.12 (needs 4.5) */
+.flag.switch { color: #7aa3ff; }
+:root[data-theme='light'] .flag.switch { color: var(--accent); }
+
+/* Light theme: RAG band text on tinted-background badge */
+:root[data-theme='light'] .band-good  { color: #14532d; }
+:root[data-theme='light'] .band-watch { color: #92400e; }
+:root[data-theme='light'] .band-poor  { color: #991b1b; }
+
+/* Amber accent: btn-primary and seg active have white text by default — dark text needed.
+   Applies both in dark theme (amber = #f59e0b, CR with #fff = 2.15) and light theme where
+   the amber btn background is amber-gradient. */
+html[data-accent='amber'] .btn-primary { color: #0f172a; }
+html[data-accent='amber'] .seg button.active { color: #0f172a; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 @media print { .topbar, .nav { display: none; } .content { max-width: none; } body { background: #fff; } }

@@ -758,7 +758,29 @@
     const ui = state.ledgerUI;
     const active = ui.sort === key;
     const arrow = active ? (ui.dir === 1 ? ' ▲' : ' ▼') : '';
-    return `<th class="sortable-th${active ? ' sort-active' : ''}" data-sort="${key}">${label}${arrow}</th>`;
+    const ariaSort = active ? (ui.dir === 1 ? 'ascending' : 'descending') : 'none';
+    return `<th class="sortable-th${active ? ' sort-active' : ''}" data-sort="${key}" tabindex="0" role="button" aria-sort="${ariaSort}">${label}${arrow}</th>`;
+  }
+
+  // Shared sort-click/keydown handler — binds to all .sortable-th in container.
+  function bindSortHeaders(container) {
+    container.querySelectorAll('.sortable-th').forEach((th) => {
+      const handler = () => {
+        const key = th.dataset.sort;
+        const ui = state.ledgerUI;
+        if (ui.sort === key) {
+          if (ui.dir === 1) ui.dir = -1;
+          else { ui.sort = null; ui.dir = 1; }
+        } else {
+          ui.sort = key; ui.dir = 1;
+        }
+        rebuildLedgerTable();
+      };
+      th.addEventListener('click', handler);
+      th.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
+      });
+    });
   }
 
   function applyLedgerFilter(metrics) {
@@ -885,19 +907,7 @@
     const tableWrap = content.querySelector('.ledger-table-wrap');
     if (tableWrap) {
       tableWrap.innerHTML = `<div style="overflow-x:auto">${ledgerTable(sorted)}</div>`;
-      tableWrap.querySelectorAll('.sortable-th').forEach((th) => {
-        th.addEventListener('click', () => {
-          const key = th.dataset.sort;
-          const ui = state.ledgerUI;
-          if (ui.sort === key) {
-            if (ui.dir === 1) ui.dir = -1;
-            else { ui.sort = null; ui.dir = 1; }
-          } else {
-            ui.sort = key; ui.dir = 1;
-          }
-          rebuildLedgerTable();
-        });
-      });
+      bindSortHeaders(tableWrap);
       tableWrap.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => editProduct(b.dataset.edit)));
       tableWrap.querySelectorAll('[data-del]').forEach((b) =>
         b.addEventListener('click', () => {
@@ -981,19 +991,7 @@
           rebuildLedgerTable();
         });
       }
-      content.querySelectorAll('.sortable-th').forEach((th) => {
-        th.addEventListener('click', () => {
-          const key = th.dataset.sort;
-          const ui = state.ledgerUI;
-          if (ui.sort === key) {
-            if (ui.dir === 1) ui.dir = -1;
-            else { ui.sort = null; ui.dir = 1; }
-          } else {
-            ui.sort = key; ui.dir = 1;
-          }
-          rebuildLedgerTable();
-        });
-      });
+      bindSortHeaders(content);
       content.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => editProduct(b.dataset.edit)));
       content.querySelectorAll('[data-del]').forEach((b) =>
         b.addEventListener('click', () => {
@@ -2034,6 +2032,20 @@
     bindMaybe('[data-a="godata"]', () => { state.view = 'data'; render(); });
   }
 
+  // ── printSafeSvg: replace CSS variable references with literal print-safe colours ──
+  function printSafeSvg(svg) {
+    return svg
+      .replace(/var\(--green\)/g, '#16a34a')
+      .replace(/var\(--red\)/g, '#dc2626')
+      .replace(/var\(--accent\)/g, '#2563eb')
+      .replace(/var\(--text-1\)/g, '#0f172a')
+      .replace(/var\(--text-2\)/g, '#475569')
+      .replace(/var\(--text-3\)/g, '#475569')
+      .replace(/var\(--stroke\)/g, '#cbd5e1')
+      .replace(/var\(--panel\)/g, '#ffffff')
+      .replace(/var\(--[^)]+\)/g, '#475569');
+  }
+
   // ── board report (print) ──
   function printReport() {
     const t = E.practiceTotals(state.products, state.config);
@@ -2042,12 +2054,29 @@
     const opp = t.switchOpportunities.slice(0, 15).map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(m.current ? m.current.name : '?')}</td><td>${esc(m.best ? m.best.name : '?')}</td><td class="r">${gbp(m.switchSavingMonthly)}</td><td class="r">${gbp(m.switchSavingAnnual)}</td></tr>`).join('');
     const loss = t.lossMakers.slice(0, 15).map((m) => `<tr><td>${esc(m.name)}</td><td class="r">${gbp(m.netReimb)}</td><td class="r">${gbp(m.currentCost)}</td><td class="r">${gbp(m.monthlyProfitCurrent)}</td></tr>`).join('');
     const cat = bd.map((r) => `<tr><td>${esc(r.label)}</td><td class="r">${r.productCount}</td><td class="r">${gbp(r.monthlyProfitCurrent)}</td><td class="r">${gbp(r.switchSavingMonthly)}</td><td class="r">${r.lossCount}</td></tr>`).join('');
+
+    const trendSvgRaw = chartMarginTrend(state.history);
+    const showTrend = state.history.length >= 2 && !trendSvgRaw.includes('<div class="empty"');
+    const trendBlock = showTrend
+      ? `<h2>Margin trend</h2>${printSafeSvg(trendSvgRaw)}`
+      : '';
+    const catBarsRaw = bd.length > 0 ? chartCategoryBars(bd) : '';
+    const catBarsBlock = catBarsRaw
+      ? `<h2>Margin by category (chart)</h2>${printSafeSvg(catBarsRaw)}`
+      : '';
+
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Dispensing Margin report — ${esc(date)}</title><style>
       body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0f172a;margin:32px;font-size:13px}h1{font-size:20px;margin:0 0 2px}.s{color:#475569;font-size:12px;margin:0 0 18px}
       .cards{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:20px}.c{border:1px solid #cbd5e1;border-radius:10px;padding:12px 14px;min-width:150px}.c .l{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#475569}.c .v{font-size:22px;font-weight:700;margin-top:4px}.pos{color:#16a34a}.neg{color:#dc2626}
-      h2{font-size:14px;margin:18px 0 8px;border-bottom:1px solid #cbd5e1;padding-bottom:4px}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #e2e8f0}.r{text-align:right}.f{margin-top:24px;color:#64748b;font-size:10px}</style></head><body>
+      h2{font-size:14px;margin:18px 0 8px;border-bottom:1px solid #cbd5e1;padding-bottom:4px}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #e2e8f0}.r{text-align:right}.f{margin-top:24px;color:#64748b;font-size:10px}
+      .chart-axis,.chart-axis-label,.chart-bar-sub,.chart-bar-label,.chart-val-label{font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:10px;fill:#475569}
+      .chart-bar-label{font-size:11px;fill:#0f172a}.chart-val-label{font-weight:700;fill:#475569}
+      .chart-grid{stroke:#cbd5e1;stroke-dasharray:3 4}.chart-zero{stroke:#475569}
+      </style></head><body>
       <h1>Dispensing Margin report</h1><p class="s">${esc(state.practiceName || 'Practice')} · ${esc(date)} · ${t.pricedCount}/${t.productCount} products priced</p>
       <div class="cards"><div class="c"><div class="l">Monthly margin</div><div class="v ${t.monthlyProfitCurrent >= 0 ? 'pos' : 'neg'}">${gbp0(t.monthlyProfitCurrent)}</div></div><div class="c"><div class="l">Annualised</div><div class="v">${gbp0(t.annualProfitCurrent)}</div></div><div class="c"><div class="l">Switch saving/mo</div><div class="v">${gbp0(t.switchSavingMonthly)}</div></div><div class="c"><div class="l">Switch saving/yr</div><div class="v">${gbp0(t.switchSavingAnnual)}</div></div><div class="c"><div class="l">Loss lines</div><div class="v ${t.lossCount ? 'neg' : ''}">${t.lossCount}</div></div></div>
+      ${trendBlock}
+      ${catBarsBlock}
       ${cat ? `<h2>Margin by category</h2><table><thead><tr><th>Category</th><th class="r">Lines</th><th class="r">Profit/mo</th><th class="r">Switch save/mo</th><th class="r">Loss</th></tr></thead><tbody>${cat}</tbody></table>` : ''}
       ${opp ? `<h2>Top supplier switches</h2><table><thead><tr><th>Product</th><th>From</th><th>To</th><th class="r">Save/mo</th><th class="r">Save/yr</th></tr></thead><tbody>${opp}</tbody></table>` : ''}
       ${loss ? `<h2>Loss-making lines</h2><table><thead><tr><th>Product</th><th class="r">Net reimb.</th><th class="r">Buy</th><th class="r">Profit/mo</th></tr></thead><tbody>${loss}</tbody></table>` : ''}
@@ -2064,12 +2093,40 @@
 
   // ── modal helper ──
   function openModal(title, bodyHtml, onSave) {
+    const previousFocus = document.activeElement;
     const host = document.createElement('div');
     host.className = 'modal-host';
-    host.innerHTML = `<div class="modal"><h3>${esc(title)}</h3><div class="mbody">${bodyHtml}</div><div class="modal-actions"><button class="btn" data-x="cancel">Cancel</button><button class="btn btn-primary" data-x="save">Save</button></div></div>`;
+    host.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}"><h3>${esc(title)}</h3><div class="mbody">${bodyHtml}</div><div class="modal-actions"><button class="btn" data-x="cancel">Cancel</button><button class="btn btn-primary" data-x="save">Save</button></div></div>`;
     $('#modalRoot').appendChild(host);
-    const close = () => { host.remove(); document.removeEventListener('keydown', onKey); };
-    const onKey = (e) => { if (e.key === 'Escape') close(); };
+
+    const modal = host.querySelector('.modal');
+
+    function getFocusable() {
+      return Array.from(modal.querySelectorAll(
+        'button, input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      )).filter((el) => !el.disabled && el.offsetParent !== null);
+    }
+
+    const close = () => {
+      host.remove();
+      document.removeEventListener('keydown', onKey);
+      if (previousFocus && previousFocus.focus) previousFocus.focus();
+    };
+
+    const onKey = (e) => {
+      if (e.key === 'Escape') { close(); return; }
+      if (e.key === 'Tab') {
+        const focusable = getFocusable();
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      }
+    };
     document.addEventListener('keydown', onKey);
     host.addEventListener('click', (e) => {
       if (e.target === host) close();

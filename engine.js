@@ -418,6 +418,152 @@
     return lines.join('\n');
   }
 
+  // ── Merge helpers (JSON backup import) ─────────────────────────────────────
+
+  // Canonical key for a product: lowercase name + ' ' + lowercase pack.
+  // Mirrors the grouping key used in parseCsv.
+  function productKeyOf(p) {
+    return String((p && p.name) || '').toLowerCase() + ' ' + String((p && p.pack) || '').toLowerCase();
+  }
+
+  // Merge two product arrays. Matching priority: id > productKeyOf.
+  // Incoming fields replace existing fields on a match, but the existing id is kept.
+  // Unmatched incoming are appended as-is (or given a new id if missing).
+  // Existing with no incoming match are kept untouched. Inputs are never mutated.
+  function mergeProducts(existing, incoming) {
+    const existList = Array.isArray(existing) ? existing : [];
+    const inList = Array.isArray(incoming) ? incoming : [];
+
+    // Build lookup maps over existing entries
+    const byId = new Map();
+    const byKey = new Map();
+    for (const e of existList) {
+      if (e && e.id != null) byId.set(String(e.id), e);
+      const k = productKeyOf(e);
+      if (!byKey.has(k)) byKey.set(k, e);
+    }
+
+    // Track which existing entries were matched (by identity)
+    const matched = new Set(); // stores existing objects that got a match
+    const updates = new Map(); // existing-object -> merged replacement
+
+    for (const inc of inList) {
+      if (!inc) continue;
+      let existObj = null;
+      if (inc.id != null) existObj = byId.get(String(inc.id)) || null;
+      if (!existObj) existObj = byKey.get(productKeyOf(inc)) || null;
+
+      if (existObj) {
+        matched.add(existObj);
+        // Incoming fields replace, but keep existing id
+        updates.set(existObj, Object.assign({}, inc, { id: existObj.id }));
+      }
+    }
+
+    const result = [];
+
+    // Existing entries: replaced if matched, kept if not
+    for (const e of existList) {
+      if (updates.has(e)) {
+        result.push(updates.get(e));
+      } else {
+        result.push(Object.assign({}, e));
+      }
+    }
+
+    // Append unmatched incoming
+    for (const inc of inList) {
+      if (!inc) continue;
+      let existObj = null;
+      if (inc.id != null) existObj = byId.get(String(inc.id)) || null;
+      if (!existObj) existObj = byKey.get(productKeyOf(inc)) || null;
+      if (!existObj) {
+        // Unmatched: append as-is, assign id if missing
+        result.push(Object.assign({}, inc, { id: inc.id != null ? inc.id : makeId() }));
+      }
+    }
+
+    return result;
+  }
+
+  // Canonical key for a formulary entry: lowercase therapeuticClass + '|' + lowercase preferred.name
+  function formularyKeyOf(e) {
+    return String((e && e.therapeuticClass) || '').toLowerCase() + '|' +
+      String((e && e.preferred && e.preferred.name) || '').toLowerCase();
+  }
+
+  // Merge two formulary entry arrays. Matching priority: id > formularyKeyOf.
+  // Same semantics as mergeProducts.
+  function mergeFormulary(existing, incoming) {
+    const existList = Array.isArray(existing) ? existing : [];
+    const inList = Array.isArray(incoming) ? incoming : [];
+
+    const byId = new Map();
+    const byKey = new Map();
+    for (const e of existList) {
+      if (e && e.id != null) byId.set(String(e.id), e);
+      const k = formularyKeyOf(e);
+      if (!byKey.has(k)) byKey.set(k, e);
+    }
+
+    const updates = new Map();
+
+    for (const inc of inList) {
+      if (!inc) continue;
+      let existObj = null;
+      if (inc.id != null) existObj = byId.get(String(inc.id)) || null;
+      if (!existObj) existObj = byKey.get(formularyKeyOf(inc)) || null;
+
+      if (existObj) {
+        updates.set(existObj, Object.assign({}, inc, { id: existObj.id }));
+      }
+    }
+
+    const result = [];
+
+    for (const e of existList) {
+      if (updates.has(e)) {
+        result.push(updates.get(e));
+      } else {
+        result.push(Object.assign({}, e));
+      }
+    }
+
+    for (const inc of inList) {
+      if (!inc) continue;
+      let existObj = null;
+      if (inc.id != null) existObj = byId.get(String(inc.id)) || null;
+      if (!existObj) existObj = byKey.get(formularyKeyOf(inc)) || null;
+      if (!existObj) {
+        result.push(Object.assign({}, inc, { id: inc.id != null ? inc.id : makeId() }));
+      }
+    }
+
+    return result;
+  }
+
+  // Merge two snapshot history arrays. Union by ym; incoming wins on collision.
+  // Result is sorted ascending by ym and capped to the last `cap` entries (default 24).
+  // Inputs are never mutated.
+  function mergeHistory(existing, incoming, cap) {
+    const existList = Array.isArray(existing) ? existing : [];
+    const inList = Array.isArray(incoming) ? incoming : [];
+    const lim = Math.max(1, cap || 24);
+
+    // Build a map from ym -> snapshot; existing first, then incoming overwrites
+    const byYm = new Map();
+    for (const s of existList) {
+      if (s && s.ym != null) byYm.set(String(s.ym), Object.assign({}, s));
+    }
+    for (const s of inList) {
+      if (s && s.ym != null) byYm.set(String(s.ym), Object.assign({}, s));
+    }
+
+    const result = [...byYm.values()];
+    result.sort((a, b) => String(a.ym).localeCompare(String(b.ym)));
+    return result.slice(-lim);
+  }
+
   return {
     DEFAULT_CONFIG,
     CATEGORIES,
@@ -440,5 +586,9 @@
     parseCsv,
     toCsv,
     makeId,
+    productKeyOf,
+    mergeProducts,
+    mergeFormulary,
+    mergeHistory,
   };
 });

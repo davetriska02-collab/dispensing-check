@@ -201,5 +201,125 @@ check(emptyConc.onConcession === false && approx(emptyConc.tariff, 1.00), 'conce
 const zeroConc = E.productMetrics(Object.assign({}, lossAtBase, { concessionPrice: 0 }), C);
 check(zeroConc.onConcession === false && approx(zeroConc.tariff, 1.00), 'concession: zero concessionPrice ignored');
 
+// ── mergeProducts ────────────────────────────────────────────────────────────
+
+// Fixture helpers
+const pA = { id: 'id-a', name: 'Metformin 500mg', pack: '28 tablets', category: 'generic', tariff: 1.50, monthlyPacks: 10, suppliers: [], currentSupplier: null };
+const pB = { id: 'id-b', name: 'Atorvastatin 20mg', pack: '28 tablets', category: 'generic', tariff: 1.43, monthlyPacks: 5, suppliers: [], currentSupplier: null };
+
+// 1. id match: incoming fields replace, but existing id is preserved
+const incIdMatch = { id: 'id-a', name: 'Metformin 500mg', pack: '28 tablets', category: 'branded', tariff: 2.00, monthlyPacks: 20, suppliers: [], currentSupplier: null };
+const mergedId = E.mergeProducts([pA, pB], [incIdMatch]);
+check(mergedId.length === 2, 'mergeProducts id match: result length unchanged');
+const updatedA = mergedId.find((p) => p.id === 'id-a');
+check(updatedA !== undefined && updatedA.category === 'branded' && updatedA.tariff === 2.00, 'mergeProducts id match: incoming fields applied');
+check(updatedA.id === 'id-a', 'mergeProducts id match: existing id preserved');
+
+// 2. name+pack match with different ids: keeps existing id
+const incKeyMatch = { id: 'different-id', name: 'Metformin 500mg', pack: '28 tablets', category: 'dnd', tariff: 3.00, monthlyPacks: 7, suppliers: [], currentSupplier: null };
+const mergedKey = E.mergeProducts([pA, pB], [incKeyMatch]);
+check(mergedKey.length === 2, 'mergeProducts key match: result length unchanged');
+const updatedByKey = mergedKey.find((p) => p.id === 'id-a');
+check(updatedByKey !== undefined && updatedByKey.category === 'dnd' && updatedByKey.tariff === 3.00, 'mergeProducts key match: incoming fields applied');
+check(updatedByKey.id === 'id-a', 'mergeProducts key match: existing id preserved (not incoming)');
+
+// 3. unmatched incoming is appended
+const incNew = { id: 'id-new', name: 'Omeprazole 20mg', pack: '28 capsules', category: 'generic', tariff: 0.80, monthlyPacks: 3, suppliers: [], currentSupplier: null };
+const mergedNew = E.mergeProducts([pA, pB], [incNew]);
+check(mergedNew.length === 3, 'mergeProducts unmatched incoming: appended');
+check(mergedNew[2].id === 'id-new', 'mergeProducts unmatched incoming: retains its own id');
+
+// 4. unmatched incoming without id gets a generated id
+const incNoId = { name: 'Ramipril 5mg', pack: '28 tablets', category: 'generic', tariff: 0.50, monthlyPacks: 2, suppliers: [], currentSupplier: null };
+const mergedNoId = E.mergeProducts([pA], [incNoId]);
+check(mergedNoId.length === 2, 'mergeProducts no-id incoming: appended');
+check(typeof mergedNoId[1].id === 'string' && mergedNoId[1].id.startsWith('rx_'), 'mergeProducts no-id incoming: id generated');
+
+// 5. existing with no incoming match is kept untouched
+const mergedKeep = E.mergeProducts([pA, pB], [incNew]);
+const keptB = mergedKeep.find((p) => p.id === 'id-b');
+check(keptB !== undefined && keptB.tariff === pB.tariff, 'mergeProducts unmatched existing: kept untouched');
+
+// 6. inputs not mutated
+const existBefore = JSON.stringify([pA, pB]);
+const incomingBefore = JSON.stringify([incIdMatch]);
+E.mergeProducts([pA, pB], [incIdMatch]);
+check(JSON.stringify([pA, pB]) === existBefore, 'mergeProducts: existing input not mutated');
+check(JSON.stringify([incIdMatch]) === incomingBefore, 'mergeProducts: incoming input not mutated');
+
+// 7. non-array inputs tolerated (treated as [])
+const mergedNonArray = E.mergeProducts(null, undefined);
+check(Array.isArray(mergedNonArray) && mergedNonArray.length === 0, 'mergeProducts: non-array inputs yield empty array');
+const mergedNonArrayExist = E.mergeProducts([pA], null);
+check(mergedNonArrayExist.length === 1, 'mergeProducts: null incoming treated as []');
+
+// ── mergeFormulary ───────────────────────────────────────────────────────────
+
+const fA = { id: 'f-a', therapeuticClass: 'Lipid Lowering', preferred: { name: 'Atorvastatin 20mg', dose: '28 tablets' }, alternatives: [], note: '' };
+const fB = { id: 'f-b', therapeuticClass: 'Diabetes', preferred: { name: 'Metformin 500mg', dose: '28 tablets' }, alternatives: [], note: '' };
+
+// id match: incoming fields replace, existing id kept
+const fIncId = { id: 'f-a', therapeuticClass: 'Lipid Lowering', preferred: { name: 'Atorvastatin 20mg', dose: '56 tablets' }, alternatives: [], note: 'updated note' };
+const mergedF = E.mergeFormulary([fA, fB], [fIncId]);
+check(mergedF.length === 2, 'mergeFormulary id match: result length unchanged');
+const updatedFA = mergedF.find((e) => e.id === 'f-a');
+check(updatedFA !== undefined && updatedFA.note === 'updated note', 'mergeFormulary id match: incoming fields applied');
+check(updatedFA.id === 'f-a', 'mergeFormulary id match: existing id preserved');
+
+// class+preferred.name match with different id
+const fIncKey = { id: 'different-f-id', therapeuticClass: 'Diabetes', preferred: { name: 'Metformin 500mg', dose: '56 tablets' }, alternatives: [], note: 'key-match note' };
+const mergedFKey = E.mergeFormulary([fA, fB], [fIncKey]);
+const updatedFB = mergedFKey.find((e) => e.id === 'f-b');
+check(updatedFB !== undefined && updatedFB.note === 'key-match note', 'mergeFormulary class+name key match: incoming fields applied');
+check(updatedFB.id === 'f-b', 'mergeFormulary class+name key match: existing id preserved');
+
+// unmatched incoming appended
+const fIncNew = { id: 'f-new', therapeuticClass: 'Hypertension', preferred: { name: 'Ramipril 5mg', dose: '28 tablets' }, alternatives: [], note: '' };
+const mergedFNew = E.mergeFormulary([fA, fB], [fIncNew]);
+check(mergedFNew.length === 3, 'mergeFormulary unmatched incoming: appended');
+
+// non-array inputs tolerated
+const mergedFNull = E.mergeFormulary(null, null);
+check(Array.isArray(mergedFNull) && mergedFNull.length === 0, 'mergeFormulary: non-array inputs yield empty array');
+
+// ── mergeHistory ─────────────────────────────────────────────────────────────
+
+const hExist = [
+  { ym: '2026-01', monthlyProfitCurrent: 100 },
+  { ym: '2026-02', monthlyProfitCurrent: 110 },
+  { ym: '2026-03', monthlyProfitCurrent: 120 },
+];
+const hInc = [
+  { ym: '2026-02', monthlyProfitCurrent: 999 }, // duplicate ym: incoming wins
+  { ym: '2026-04', monthlyProfitCurrent: 130 }, // new ym
+];
+
+const mergedH = E.mergeHistory(hExist, hInc);
+check(mergedH.length === 4, 'mergeHistory: union of 3 existing + 1 new = 4 entries');
+check(mergedH[1].ym === '2026-02' && mergedH[1].monthlyProfitCurrent === 999, 'mergeHistory: incoming wins on duplicate ym');
+check(mergedH[3].ym === '2026-04', 'mergeHistory: new ym appended');
+// ascending ym order
+check(mergedH[0].ym < mergedH[1].ym && mergedH[1].ym < mergedH[2].ym && mergedH[2].ym < mergedH[3].ym, 'mergeHistory: result in ascending ym order');
+
+// cap respected
+const mergedHCapped = E.mergeHistory(hExist, hInc, 3);
+check(mergedHCapped.length === 3, 'mergeHistory: cap=3 limits to 3 entries');
+check(mergedHCapped[0].ym === '2026-02', 'mergeHistory: cap drops oldest entries');
+
+// inputs not mutated
+const hExistBefore = JSON.stringify(hExist);
+const hIncBefore = JSON.stringify(hInc);
+E.mergeHistory(hExist, hInc);
+check(JSON.stringify(hExist) === hExistBefore, 'mergeHistory: existing input not mutated');
+check(JSON.stringify(hInc) === hIncBefore, 'mergeHistory: incoming input not mutated');
+
+// non-array inputs tolerated
+const mergedHNull = E.mergeHistory(null, undefined);
+check(Array.isArray(mergedHNull) && mergedHNull.length === 0, 'mergeHistory: non-array inputs yield empty array');
+
+// ── productKeyOf ─────────────────────────────────────────────────────────────
+check(E.productKeyOf({ name: 'Metformin 500mg', pack: '28 Tablets' }) === 'metformin 500mg 28 tablets', 'productKeyOf: lowercased name + space + lowercased pack');
+check(E.productKeyOf(null) === ' ', 'productKeyOf: null input returns space-separated empty strings');
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) process.exit(1);
