@@ -85,5 +85,94 @@ h = E.upsertSnapshot(h, { monthlyProfitCurrent: 120 }, '2026-06');
 h = E.upsertSnapshot(h, { monthlyProfitCurrent: 130 }, '2026-06');
 check(h.length === 2 && h[1].monthlyProfitCurrent === 130, 'snapshot upsert dedupes by month, keeps latest');
 
+// ── parsePackQty ────────────────────────────────────────────────────────────
+check(E.parsePackQty('28') === 28, 'parsePackQty: plain integer');
+check(E.parsePackQty('no digits') === null, 'parsePackQty: no digits returns null');
+check(E.parsePackQty('0') === null, 'parsePackQty: zero returns null (must be > 0)');
+check(E.parsePackQty('2.5ml') === 2.5, 'parsePackQty: decimal with unit');
+
+// ── clampPct ─────────────────────────────────────────────────────────────────
+check(E.clampPct(-5) === 0, 'clampPct: negative clamped to 0');
+check(E.clampPct('abc') === 0, 'clampPct: non-numeric clamped to 0');
+
+// ── priceValue ───────────────────────────────────────────────────────────────
+check(E.priceValue('abc') === null, 'priceValue: non-numeric string returns null');
+check(E.priceValue(0) === 0, 'priceValue: zero is a valid (non-null) price');
+
+// ── marginBand ───────────────────────────────────────────────────────────────
+check(E.marginBand(null) === null, 'marginBand: null pct returns null');
+const customT = { green: 30, amber: 15 };
+check(E.marginBand(35, customT) === 'good', 'marginBand: custom thresholds — above green is good');
+check(E.marginBand(20, customT) === 'watch', 'marginBand: custom thresholds — between amber and green is watch');
+check(E.marginBand(10, customT) === 'poor', 'marginBand: custom thresholds — below amber is poor');
+
+// ── parseCsv multi-row merge ─────────────────────────────────────────────────
+const multiCsv = [
+  'name,pack,category,tariff,monthlyPacks,supplier,price,current',
+  'Metformin 500mg,28,generic,1.50,10,Alliance,1.20,yes',
+  'Metformin 500mg,28,generic,,5,Phoenix,1.10,',
+].join('\n');
+const multiParsed = E.parseCsv(multiCsv);
+check(multiParsed.length === 1, 'parseCsv multi-row: two rows with same name+pack yield ONE product');
+check(multiParsed[0].suppliers.length === 2, 'parseCsv multi-row: both suppliers present');
+check(multiParsed[0].tariff === 1.50, 'parseCsv multi-row: tariff from first row present');
+check(multiParsed[0].currentSupplier === 'Alliance', 'parseCsv multi-row: current flag marks currentSupplier');
+
+// backfill: second row has tariff, first has none
+const backfillCsv = [
+  'name,pack,category,tariff,monthlyPacks,supplier,price,current',
+  'Omeprazole 20mg,28,generic,,10,AAH,0.80,',
+  'Omeprazole 20mg,28,generic,2.00,,DE,0.75,yes',
+].join('\n');
+const backfilled = E.parseCsv(backfillCsv);
+check(backfilled[0].tariff === 2.00, 'parseCsv multi-row: tariff backfilled from second row');
+
+// ── toCsv empty suppliers ────────────────────────────────────────────────────
+const noSupplierProduct = { id: 'ns1', name: 'TestDrug', pack: '56', category: 'generic', tariff: 2.0, monthlyPacks: 5, suppliers: [], currentSupplier: null };
+const noSupplierCsv = E.toCsv([noSupplierProduct]);
+const noSupplierRows = noSupplierCsv.trim().split('\n');
+check(noSupplierRows.length === 2, 'toCsv empty suppliers: emits header + one data row');
+const noSupplierBack = E.parseCsv(noSupplierCsv);
+check(noSupplierBack.length === 1, 'toCsv empty suppliers: round-trips to one product');
+check(noSupplierBack[0].suppliers.length === 0, 'toCsv empty suppliers: product has zero suppliers after round-trip');
+
+// ── upsertSnapshot cap ───────────────────────────────────────────────────────
+let sh = [];
+sh = E.upsertSnapshot(sh, { v: 1 }, '2025-01', 3);
+sh = E.upsertSnapshot(sh, { v: 2 }, '2025-02', 3);
+sh = E.upsertSnapshot(sh, { v: 3 }, '2025-03', 3);
+sh = E.upsertSnapshot(sh, { v: 4 }, '2025-04', 3);
+check(sh.length === 3, 'upsertSnapshot cap: inserting 4 with cap=3 yields 3 entries');
+check(sh[0].ym === '2025-02', 'upsertSnapshot cap: oldest entry dropped');
+check(sh[2].ym === '2025-04', 'upsertSnapshot cap: order is ascending by ym');
+
+// ── prescriberFormulary: missing therapeuticClass -> Uncategorised ────────────
+const uncatEntries = [
+  { id: 'u1', therapeuticClass: '', preferred: { name: 'Drug A', dose: '1 tab' }, alternatives: [], note: '' },
+  { id: 'u2', preferred: { name: 'Drug B', dose: '2 tabs' }, alternatives: [], note: '' },
+];
+const uncatResult = E.prescriberFormulary(uncatEntries);
+check(uncatResult.length === 1 && uncatResult[0].therapeuticClass === 'Uncategorised', 'prescriberFormulary: blank/missing therapeuticClass groups under Uncategorised');
+check(uncatResult[0].items.length === 2, 'prescriberFormulary: both items under Uncategorised');
+
+// ── toCsv negative tariff guard ──────────────────────────────────────────────
+const negTariffProduct = {
+  id: 'neg1', name: 'NegDrug', pack: '30', category: 'generic',
+  tariff: -5, monthlyPacks: 10,
+  suppliers: [{ name: 'SupA', price: -1.5 }], currentSupplier: 'SupA',
+};
+const negCsv = E.toCsv([negTariffProduct]);
+// The raw CSV must NOT contain a bare cell beginning with '-' for tariff or price
+const negDataLine = negCsv.split('\n')[1];
+const negCells = negDataLine.split(',');
+check(!negCells[3].startsWith('-'), 'toCsv negative tariff: raw tariff cell does not start with bare -');
+check(!negCells[6].startsWith('-'), 'toCsv negative price: raw price cell does not start with bare -');
+check(negCells[3].startsWith("'"), 'toCsv negative tariff: tariff cell guarded with leading apostrophe');
+// Round-trip must be lossless
+const negBack = E.parseCsv(negCsv);
+check(negBack.length === 1, 'toCsv negative tariff round-trip: one product');
+check(negBack[0].tariff === -5, 'toCsv negative tariff round-trip: tariff is -5');
+check(negBack[0].suppliers[0].price === -1.5, 'toCsv negative tariff round-trip: price is -1.5');
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) process.exit(1);

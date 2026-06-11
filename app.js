@@ -59,11 +59,13 @@
   // ── formatting ──
   function gbp(n) {
     const v = Number(n) || 0;
-    return (v < 0 ? '−£' : '£') + Math.abs(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const r = Math.round(v * 100) / 100;
+    return (r < 0 ? '−£' : '£') + Math.abs(r).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
   function gbp0(n) {
     const v = Number(n) || 0;
-    return (v < 0 ? '−£' : '£') + Math.abs(Math.round(v)).toLocaleString('en-GB');
+    const r = Math.round(v);
+    return (r < 0 ? '−£' : '£') + Math.abs(r).toLocaleString('en-GB');
   }
   function pct(n) {
     if (n == null || !isFinite(Number(n))) return '—';
@@ -196,10 +198,10 @@
       ${breakdownPanel(bd)}
       ${opportunities(t)}`;
 
-    content.querySelector('[data-a="add"]').addEventListener('click', () => editProduct(null));
-    bindMaybe('[data-a="switchall"]', () => switchAll());
-    bindMaybe('[data-a="print"]', () => printReport());
-    bindMaybe('[data-a="sample"]', () => {
+    bindAll('[data-a="add"]', () => editProduct(null));
+    bindAll('[data-a="switchall"]', () => switchAll());
+    bindAll('[data-a="print"]', () => printReport());
+    bindAll('[data-a="sample"]', () => {
       state.products = sampleProducts();
       state.formulary = sampleFormulary(state.products);
       save(KEYS.products, state.products);
@@ -218,10 +220,10 @@
       })
     );
   }
-  function bindMaybe(sel, fn) {
-    const el = content.querySelector(sel);
-    if (el) el.addEventListener('click', fn);
+  function bindAll(sel, fn) {
+    content.querySelectorAll(sel).forEach((el) => el.addEventListener('click', fn));
   }
+  const bindMaybe = bindAll;
 
   function cards(t) {
     return `<div class="cards">
@@ -507,6 +509,50 @@
       </div>`;
   }
 
+  // ── JSON import sanitisers ──
+  function sanitiseProducts(raw) {
+    if (!Array.isArray(raw)) return [];
+    const catIds = E.CATEGORIES.map((c) => c.id);
+    return raw.filter((x) => x && typeof x === 'object').map((x) => {
+      const suppliers = Array.isArray(x.suppliers)
+        ? x.suppliers.filter((s) => s && typeof s === 'object' && String(s.name || '').trim()).map((s) => ({
+            name: String(s.name).trim(),
+            price: isFinite(Number(s.price)) ? Number(s.price) : '',
+          }))
+        : [];
+      return {
+        id: typeof x.id === 'string' && x.id ? x.id : E.makeId(),
+        name: typeof x.name === 'string' ? x.name : '',
+        pack: typeof x.pack === 'string' ? x.pack : '',
+        category: catIds.includes(x.category) ? x.category : 'generic',
+        tariff: isFinite(Number(x.tariff)) ? Number(x.tariff) : 0,
+        monthlyPacks: isFinite(Number(x.monthlyPacks)) ? Number(x.monthlyPacks) : 0,
+        suppliers,
+        currentSupplier: typeof x.currentSupplier === 'string' ? x.currentSupplier : null,
+      };
+    });
+  }
+  function sanitiseFormulary(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((x) => x && typeof x === 'object').map((x) => {
+      const pref = (x.preferred && typeof x.preferred === 'object') ? x.preferred : {};
+      const alts = Array.isArray(x.alternatives)
+        ? x.alternatives.filter((a) => a && typeof a === 'object').map((a) => ({ name: String(a.name || ''), dose: String(a.dose || '') }))
+        : [];
+      return {
+        id: typeof x.id === 'string' && x.id ? x.id : E.makeId(),
+        therapeuticClass: typeof x.therapeuticClass === 'string' ? x.therapeuticClass : '',
+        note: typeof x.note === 'string' ? x.note : '',
+        preferred: { name: String(pref.name || ''), dose: String(pref.dose || ''), productId: String(pref.productId || '') },
+        alternatives: alts,
+      };
+    });
+  }
+  function sanitiseHistory(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((x) => x && typeof x === 'object' && typeof x.ym === 'string');
+  }
+
   // ── DATA (import / export) ──
   function renderData() {
     content.innerHTML = `
@@ -531,13 +577,12 @@
       if (!f) return;
       try {
         const parsed = E.parseCsv(await f.text());
-        if (!parsed.length) alert('No rows found. Expected columns: ' + E.CSV_HEADER);
-        else {
-          state.products = parsed;
-          save(KEYS.products, state.products);
-          state.view = 'ledger';
-          render();
-        }
+        if (!parsed.length) { alert('No rows found. Expected columns: ' + E.CSV_HEADER); e.target.value = ''; return; }
+        if (state.products.length > 0 && !confirm(`Importing will replace your current data (${state.products.length} products). Continue?`)) { e.target.value = ''; return; }
+        state.products = parsed;
+        save(KEYS.products, state.products);
+        state.view = 'ledger';
+        render();
       } catch (err) {
         alert('Could not read that file: ' + err.message);
       }
@@ -548,10 +593,17 @@
       if (!f) return;
       try {
         const d = JSON.parse(await f.text());
-        if (Array.isArray(d.products)) state.products = d.products;
-        if (Array.isArray(d.formulary)) state.formulary = d.formulary;
+        const incomingProducts = sanitiseProducts(d.products);
+        const incomingFormulary = sanitiseFormulary(d.formulary);
+        const wouldReplace = state.products.length > 0 || state.formulary.length > 0;
+        if (wouldReplace) {
+          const n = state.products.length;
+          if (!confirm(`Importing will replace your current data (${n} products). Continue?`)) { e.target.value = ''; return; }
+        }
+        state.products = incomingProducts;
+        state.formulary = incomingFormulary;
         if (d.config) state.config = mergeConfig(d.config);
-        if (Array.isArray(d.history)) state.history = d.history;
+        if (Array.isArray(d.history)) state.history = sanitiseHistory(d.history);
         save(KEYS.products, state.products);
         save(KEYS.formulary, state.formulary);
         save(KEYS.config, state.config);
@@ -638,7 +690,9 @@
     host.className = 'modal-host';
     host.innerHTML = `<div class="modal"><h3>${esc(title)}</h3><div class="mbody">${bodyHtml}</div><div class="modal-actions"><button class="btn" data-x="cancel">Cancel</button><button class="btn btn-primary" data-x="save">Save</button></div></div>`;
     $('#modalRoot').appendChild(host);
-    const close = () => host.remove();
+    const close = () => { host.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
     host.addEventListener('click', (e) => {
       if (e.target === host) close();
     });
@@ -646,6 +700,8 @@
     host.querySelector('[data-x="save"]').addEventListener('click', () => {
       if (onSave() !== false) close();
     });
+    const first = host.querySelector('.mbody input, .mbody select, .mbody textarea');
+    if (first) first.focus();
     return host;
   }
 

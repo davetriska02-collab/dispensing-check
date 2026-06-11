@@ -360,10 +360,10 @@
       if (!name) continue;
       const pack = unguardCell((r[1] || '').trim());
       const category = normaliseCategory(r[2]);
-      const tariff = parseMoney(r[3]);
-      const monthlyPacks = Math.max(0, Math.round(num(parseMoney(r[4]))));
+      const tariff = parseMoney(unguardCell((r[3] || '').trim()));
+      const monthlyPacks = Math.max(0, Math.round(num(parseMoney(unguardCell((r[4] || '').trim())))));
       const supplierName = unguardCell((r[5] || '').trim());
-      const priceCell = (r[6] || '').trim();
+      const priceCell = unguardCell((r[6] || '').trim());
       const price = priceCell === '' ? '' : parseMoney(priceCell);
       const isCurrent = truthyFlag(r[7]);
       const key = name.toLowerCase() + ' ' + pack.toLowerCase();
@@ -401,10 +401,10 @@
             csvCell(p.name),
             csvCell(p.pack),
             csvCell(p.category || 'generic'),
-            fmtNum(p.tariff),
-            fmtNum(p.monthlyPacks),
+            csvCell(fmtNum(p.tariff)),
+            csvCell(fmtNum(p.monthlyPacks)),
             csvCell(s.name || ''),
-            s.price === '' ? '' : fmtNum(s.price),
+            s.price === '' ? '' : csvCell(fmtNum(s.price)),
             current,
           ].join(',')
         );
