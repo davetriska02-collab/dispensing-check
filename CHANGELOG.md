@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.2.0 — 2026-06-11
+
+Five-minute start: adoption, durability and accessibility. Still zero
+dependencies, still fully offline.
+
+### Added
+
+- **First-run setup guide** — a three-step wizard on first launch: load the
+  worked example, import your Drug Tariff, or add a product, then a pointer
+  at where to look first. Never shown twice; re-runnable from Settings.
+- **Auto-backup** — pick a backup file once (Chrome/Edge, File System
+  Access API) and every change is written to it automatically, debounced;
+  status, re-authorise and stop controls in Settings. On other browsers a
+  gentle banner nudges a JSON export when the last one is over 14 days old.
+- **Merge on import** — JSON and CSV imports now offer Merge (recommended)
+  or Replace. Merge matches by id, then by name + pack, keeps existing ids,
+  appends new lines and never touches settings or the PIN. Pure, tested
+  merge functions in the engine (34 new tests; 161 total).
+- **Board report charts** — the printable report now embeds the margin
+  trend and category charts with print-safe colours.
+
+### Changed
+
+- Accessibility pass: sortable headers are keyboard-operable with
+  aria-sort; modals are proper dialogs with focus trap and focus restore;
+  visible focus outlines; WCAG AA contrast fixes for the switch flag, the
+  amber accent and light-theme RAG bands (ratios computed, not guessed).
+- Clear all data now also deletes the on-device tariff dataset and the
+  auto-backup link.
+
 ## v1.1.0 — 2026-06-11
 
 Tariff intelligence: the app stops arriving empty. Public data in, action

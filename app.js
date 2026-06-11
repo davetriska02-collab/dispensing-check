@@ -17,18 +17,22 @@
     accent: 'dc.accent',
     tariffMonth: 'dc.tariffMonth',
     concessions: 'dc.concessions',
+    onboarded: 'dc.onboarded',
+    lastBackupAt: 'dc.lastBackupAt',
+    lastExport: 'dc.lastExport',
+    backupNudgeAt: 'dc.backupNudgeAt',
   };
 
   const I = window.DispensingImporters;
 
   // ── IndexedDB tariff store ──
-  // db 'dispensingCheck' v1, stores: 'tariff' (keyPath 'key'), 'meta'
+  // db 'dispensingCheck' v2, stores: 'tariff' (keyPath 'key'), 'meta', 'handles'
   let _idb = null;
   function openIdb() {
     if (_idb) return Promise.resolve(_idb);
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       if (!window.indexedDB) { resolve(null); return; }
-      const req = window.indexedDB.open('dispensingCheck', 1);
+      const req = window.indexedDB.open('dispensingCheck', 2);
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains('tariff')) {
@@ -37,9 +41,49 @@
         if (!db.objectStoreNames.contains('meta')) {
           db.createObjectStore('meta', { keyPath: 'id' });
         }
+        if (!db.objectStoreNames.contains('handles')) {
+          db.createObjectStore('handles', { keyPath: 'id' });
+        }
       };
       req.onsuccess = (e) => { _idb = e.target.result; resolve(_idb); };
       req.onerror = () => { resolve(null); };
+    });
+  }
+
+  // ── IDB helpers for file handles ──
+  function idbPutHandle(id, handle) {
+    return openIdb().then((db) => {
+      if (!db) return;
+      return new Promise((resolve) => {
+        const tx = db.transaction('handles', 'readwrite');
+        tx.objectStore('handles').put({ id, handle });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    });
+  }
+
+  function idbGetHandle(id) {
+    return openIdb().then((db) => {
+      if (!db) return null;
+      return new Promise((resolve) => {
+        const tx = db.transaction('handles', 'readonly');
+        const req = tx.objectStore('handles').get(id);
+        req.onsuccess = () => resolve(req.result ? req.result.handle : null);
+        req.onerror = () => resolve(null);
+      });
+    });
+  }
+
+  function idbDeleteHandle(id) {
+    return openIdb().then((db) => {
+      if (!db) return;
+      return new Promise((resolve) => {
+        const tx = db.transaction('handles', 'readwrite');
+        tx.objectStore('handles').delete(id);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
     });
   }
 
@@ -126,6 +170,154 @@
   }
   function save(k, v) {
     localStorage.setItem(k, JSON.stringify(v));
+    scheduleBackup();
+  }
+
+  // ── Auto-backup (File System Access API) ──
+  const FSAPI_SUPPORTED = typeof window.showSaveFilePicker === 'function';
+  const _backup = {
+    handle: null,         // FileSystemFileHandle | null
+    status: 'idle',       // 'idle' | 'ok' | 'paused' | 'unsupported'
+    timer: null,
+  };
+
+  function buildBackup() {
+    return JSON.stringify({
+      products: state.products,
+      formulary: state.formulary,
+      config: state.config,
+      history: state.history,
+    }, null, 2);
+  }
+
+  function fmtTime(isoStr) {
+    if (!isoStr) return '';
+    try {
+      const d = new Date(isoStr);
+      return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    } catch (_) {
+      return '';
+    }
+  }
+
+  async function writeBackup(fromGesture) {
+    if (!_backup.handle) return;
+    try {
+      const perm = await _backup.handle.queryPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') {
+        if (fromGesture) {
+          const req = await _backup.handle.requestPermission({ mode: 'readwrite' });
+          if (req !== 'granted') { _backup.status = 'paused'; refreshBackupStatus(); return; }
+        } else {
+          _backup.status = 'paused';
+          refreshBackupStatus();
+          return;
+        }
+      }
+      const writable = await _backup.handle.createWritable();
+      await writable.write(buildBackup());
+      await writable.close();
+      const now = new Date().toISOString();
+      localStorage.setItem(KEYS.lastBackupAt, now);
+      localStorage.setItem(KEYS.lastExport, now);
+      _backup.status = 'ok';
+      refreshBackupStatus();
+    } catch (_) {
+      _backup.status = 'paused';
+      refreshBackupStatus();
+    }
+  }
+
+  function scheduleBackup() {
+    if (!FSAPI_SUPPORTED || !_backup.handle) return;
+    if (_backup.timer) clearTimeout(_backup.timer);
+    _backup.timer = setTimeout(() => {
+      _backup.timer = null;
+      writeBackup(false);
+    }, 2000);
+  }
+
+  function refreshBackupStatus() {
+    // Update any live backup status element in the settings panel
+    const el = document.getElementById('backupStatus');
+    if (el) el.innerHTML = buildBackupStatusHtml();
+  }
+
+  function buildBackupStatusHtml() {
+    if (!FSAPI_SUPPORTED) {
+      return `<p class="note">Auto-backup requires Chrome or Edge (File System Access API). Use <strong>Export JSON</strong> below for backups.</p>`;
+    }
+    if (!_backup.handle) {
+      return `<p class="note">No backup file configured.</p>
+        <div class="btn-row" style="margin-top:8px"><button class="btn btn-primary" id="backupSetupBtn">Set up auto-backup file</button></div>`;
+    }
+    const name = esc(_backup.handle.name || 'backup file');
+    const lastAt = localStorage.getItem(KEYS.lastBackupAt);
+    const lastStr = lastAt ? ' · last written ' + esc(fmtTime(lastAt)) : '';
+    if (_backup.status === 'paused') {
+      return `<p class="note" style="color:var(--amber)">${name}${lastStr}</p>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn" id="backupReauthBtn">Auto-backup paused — click to re-authorise</button>
+          <button class="btn" id="backupStopBtn">Stop auto-backup</button>
+        </div>`;
+    }
+    return `<p class="note">${name}${lastStr}</p>
+      <div class="btn-row" style="margin-top:8px"><button class="btn" id="backupStopBtn">Stop auto-backup</button></div>`;
+  }
+
+  function bindBackupButtons() {
+    const setupBtn = document.getElementById('backupSetupBtn');
+    if (setupBtn) {
+      setupBtn.addEventListener('click', async () => {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: 'dispensing-check-backup.json',
+            types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+          });
+          _backup.handle = handle;
+          await idbPutHandle('backup', handle);
+          _backup.status = 'ok';
+          await writeBackup(true);
+          refreshBackupStatus();
+          bindBackupButtons();
+        } catch (_) {
+          // User cancelled or error
+        }
+      });
+    }
+    const reauthBtn = document.getElementById('backupReauthBtn');
+    if (reauthBtn) {
+      reauthBtn.addEventListener('click', async () => {
+        await writeBackup(true);
+        refreshBackupStatus();
+        bindBackupButtons();
+      });
+    }
+    const stopBtn = document.getElementById('backupStopBtn');
+    if (stopBtn) {
+      stopBtn.addEventListener('click', async () => {
+        _backup.handle = null;
+        _backup.status = 'idle';
+        await idbDeleteHandle('backup');
+        refreshBackupStatus();
+        bindBackupButtons();
+      });
+    }
+  }
+
+  // Load handle on boot (called after state is initialised, before first render)
+  function loadBackupHandle() {
+    if (!FSAPI_SUPPORTED) return;
+    idbGetHandle('backup').then(async (handle) => {
+      if (!handle) return;
+      _backup.handle = handle;
+      try {
+        const perm = await handle.queryPermission({ mode: 'readwrite' });
+        _backup.status = perm === 'granted' ? 'ok' : 'paused';
+      } catch (_) {
+        _backup.status = 'paused';
+      }
+    });
   }
   function mergeConfig(raw) {
     const d = E.DEFAULT_CONFIG;
@@ -922,9 +1114,191 @@
     }
   }
 
+  // ── Nudge banner ──
+  function buildNudgeBanner() {
+    if (state.products.length === 0) return '';
+    const lastExport = localStorage.getItem(KEYS.lastExport);
+    const nudgeAt = localStorage.getItem(KEYS.backupNudgeAt);
+    const FOURTEEN_DAYS = 14 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    // Suppress if dismissed within 14 days
+    if (nudgeAt && now - new Date(nudgeAt).getTime() < FOURTEEN_DAYS) return '';
+    // Suppress if exported within 14 days
+    if (lastExport && now - new Date(lastExport).getTime() < FOURTEEN_DAYS) return '';
+
+    return `<div class="nudge-banner">
+      <span>No recent backup — export your data or set up auto-backup in Settings.</span>
+      <div class="nudge-actions">
+        <button class="btn btn-primary" style="font-size:0.71rem;padding:5px 10px" data-a="nudge-export">Export now</button>
+        <button class="iconbtn" style="font-size:1rem;padding:2px 7px" data-a="nudge-dismiss" title="Dismiss for 14 days">&times;</button>
+      </div>
+    </div>`;
+  }
+
+  // ── First-run wizard ──
+  function openWizard() {
+    let currentStep = 1;
+    let loadedSample = false;
+    let wizardHost = null;
+
+    function markOnboarded() {
+      localStorage.setItem(KEYS.onboarded, '1');
+    }
+
+    function closeWizard() {
+      markOnboarded();
+      if (wizardHost) {
+        wizardHost.remove();
+        wizardHost = null;
+      }
+      document.removeEventListener('keydown', onWizardKey);
+    }
+
+    function onWizardKey(e) {
+      if (e.key === 'Escape') {
+        closeWizard();
+      }
+    }
+    document.addEventListener('keydown', onWizardKey);
+
+    function renderStep(step) {
+      if (!wizardHost) return;
+      const modal = wizardHost.querySelector('.modal');
+      if (!modal) return;
+
+      let titleText = '';
+      let bodyHtml = '';
+      let footerHtml = '';
+
+      if (step === 1) {
+        titleText = 'Welcome to Dispensing Check';
+        bodyHtml = `
+          <p class="note" style="font-size:0.93rem;color:var(--text-1);line-height:1.6">
+            Dispensing Check helps UK dispensing practices analyse their Drug Tariff margins, spot loss-making lines, and find savings by switching to the cheapest supplier on file.
+            Your formulary and price data stay here — every calculation runs locally in this browser, nothing is sent anywhere.
+          </p>
+          <p class="note" style="margin-top:10px">All data stays in this browser only. No patient data is stored. Nothing is transmitted.</p>`;
+        footerHtml = `
+          <button class="btn btn-primary" id="wiz-next">Next &rarr;</button>
+          <button class="btn" id="wiz-skip" style="margin-left:auto">Skip setup</button>`;
+      } else if (step === 2) {
+        titleText = 'How do you want to start?';
+        bodyHtml = `
+          <div class="wizard-options">
+            <button class="wizard-option" id="wiz-sample">
+              <span class="wizard-option-title">Load the worked example</span>
+              <span class="wizard-option-desc">See four sample products with margins, switch opportunities and a formulary — ready to explore.</span>
+            </button>
+            <button class="wizard-option" id="wiz-tariff">
+              <span class="wizard-option-title">Import your Drug Tariff</span>
+              <span class="wizard-option-desc">Download the NHSBSA Part VIII price list and import it now to pre-populate tariff prices.</span>
+            </button>
+            <button class="wizard-option" id="wiz-addproduct">
+              <span class="wizard-option-title">Add my first product</span>
+              <span class="wizard-option-desc">Jump straight in and enter a product name, tariff price and wholesaler quote.</span>
+            </button>
+          </div>`;
+        footerHtml = `
+          <button class="btn" id="wiz-back">&larr; Back</button>
+          <button class="btn" id="wiz-skip" style="margin-left:auto">Skip setup</button>`;
+      } else if (step === 3) {
+        titleText = 'Where to look first';
+        bodyHtml = `
+          <p class="note" style="font-size:0.93rem;color:var(--text-1);margin-bottom:14px">The worked example is loaded. Here is where to start:</p>
+          <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:10px">
+            <li class="note" style="display:flex;gap:10px;align-items:flex-start"><span style="font-size:1.1rem">📊</span><span><strong style="color:var(--text-1)">The summary cards</strong> at the top of the Margin ledger show your monthly profit, switch savings and loss-making lines at a glance.</span></li>
+            <li class="note" style="display:flex;gap:10px;align-items:flex-start"><span style="font-size:1.1rem">📈</span><span><strong style="color:var(--text-1)">The Insights tab</strong> shows margin trend charts, top earners, switch opportunities and spend mix — all built from your data.</span></li>
+            <li class="note" style="display:flex;gap:10px;align-items:flex-start"><span style="font-size:1.1rem">🔀</span><span><strong style="color:var(--text-1)">The "Switch all" button</strong> in the ledger toolbar applies the cheapest supplier to every switchable line in one click.</span></li>
+          </ul>`;
+        footerHtml = `
+          <button class="btn btn-primary" id="wiz-finish">Finish</button>`;
+      }
+
+      modal.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
+          <h3 style="margin:0;font-size:1.01rem;font-family:var(--sans);letter-spacing:0;text-transform:none;padding:0;color:var(--text-1)">${esc(titleText)}</h3>
+          <span class="note" style="font-size:0.69rem;margin-left:14px;white-space:nowrap">Step ${step}${step < 3 ? ' of ' + (loadedSample ? '3' : '2') : ' of 3'}</span>
+        </div>
+        <div class="mbody">${bodyHtml}</div>
+        <div class="modal-actions" style="justify-content:flex-start;gap:8px">
+          ${footerHtml}
+        </div>`;
+
+      // Bind buttons
+      const nextBtn = modal.querySelector('#wiz-next');
+      if (nextBtn) nextBtn.addEventListener('click', () => { currentStep = 2; renderStep(2); });
+
+      const backBtn = modal.querySelector('#wiz-back');
+      if (backBtn) backBtn.addEventListener('click', () => { currentStep = 1; renderStep(1); });
+
+      const skipBtn = modal.querySelector('#wiz-skip');
+      if (skipBtn) skipBtn.addEventListener('click', closeWizard);
+
+      const finishBtn = modal.querySelector('#wiz-finish');
+      if (finishBtn) finishBtn.addEventListener('click', closeWizard);
+
+      const sampleBtn = modal.querySelector('#wiz-sample');
+      if (sampleBtn) {
+        sampleBtn.addEventListener('click', () => {
+          loadedSample = true;
+          loadSample();
+          currentStep = 3;
+          renderStep(3);
+        });
+      }
+
+      const tariffBtn = modal.querySelector('#wiz-tariff');
+      if (tariffBtn) {
+        tariffBtn.addEventListener('click', () => {
+          markOnboarded();
+          closeWizard();
+          state.view = 'data';
+          render();
+        });
+      }
+
+      const addProductBtn = modal.querySelector('#wiz-addproduct');
+      if (addProductBtn) {
+        addProductBtn.addEventListener('click', () => {
+          markOnboarded();
+          closeWizard();
+          editProduct(null);
+        });
+      }
+
+      // Focus first focusable
+      const firstFocusable = modal.querySelector('button, input, select, textarea');
+      if (firstFocusable) firstFocusable.focus();
+    }
+
+    // Build host
+    wizardHost = document.createElement('div');
+    wizardHost.className = 'modal-host';
+    wizardHost.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="Setup wizard" style="max-width:560px"></div>`;
+    $('#modalRoot').appendChild(wizardHost);
+
+    // Click outside closes
+    wizardHost.addEventListener('click', (e) => {
+      if (e.target === wizardHost) closeWizard();
+    });
+
+    renderStep(1);
+  }
+
   // ── LEDGER (partner) ──
   function renderLedger() {
     recordSnapshot();
+
+    // First-run wizard trigger
+    if (
+      state.products.length === 0 &&
+      state.formulary.length === 0 &&
+      !localStorage.getItem(KEYS.onboarded)
+    ) {
+      openWizard();
+    }
+
     const t = E.practiceTotals(state.products, state.config);
     const rate = state.config.mode === 'dispensingDoctor' ? `Dispensing doctor · ${state.config.ddRate}% flat clawback` : 'Pharmacy group rates';
     const allMetrics = state.products.map((p) => ({ p, m: E.productMetrics(p, state.config) }));
@@ -943,7 +1317,11 @@
       } catch (_) {}
     }
 
+    // Backup nudge banner
+    const nudgeBanner = buildNudgeBanner();
+
     content.innerHTML = `
+      ${nudgeBanner}
       <h1>Margin ledger</h1>
       <p class="sub">${esc(rate)} · ${t.pricedCount}/${t.productCount} products priced${subExtra}</p>
       <div class="btn-row">
@@ -1004,6 +1382,20 @@
         })
       );
     }
+
+    // Nudge banner actions
+    const nudgeExport = content.querySelector('[data-a="nudge-export"]');
+    if (nudgeExport) nudgeExport.addEventListener('click', () => {
+      const payload = buildBackup();
+      download(payload, `dispensing-check-backup-${today()}.json`, 'application/json');
+      localStorage.setItem(KEYS.lastExport, new Date().toISOString());
+      render();
+    });
+    const nudgeDismiss = content.querySelector('[data-a="nudge-dismiss"]');
+    if (nudgeDismiss) nudgeDismiss.addEventListener('click', () => {
+      localStorage.setItem(KEYS.backupNudgeAt, new Date().toISOString());
+      render();
+    });
   }
   function bindAll(sel, fn) {
     content.querySelectorAll(sel).forEach((el) => el.addEventListener('click', fn));
@@ -1397,6 +1789,7 @@
       <div class="panel"><h3>Price list (CSV)</h3><div class="pad">
         <p class="note">Columns: <code>${esc(E.CSV_HEADER)}</code>. Rows sharing name+pack group into one product. Empty price = unpriced.</p>
         <div class="btn-row"><button class="btn" data-a="impcsv">Import CSV</button><button class="btn" data-a="expcsv">Export CSV</button></div>
+        <p class="note" id="mergeResult" style="margin-top:6px"></p>
       </div></div>
       <div class="panel"><h3>Full backup (JSON)</h3><div class="pad"><div class="btn-row"><button class="btn" data-a="impjson">Import JSON</button><button class="btn" data-a="expjson">Export JSON</button></div></div></div>
       <div class="panel"><div class="pad">
@@ -1479,16 +1872,21 @@
     bindMaybe('[data-a="expcsv"]', () => download(E.toCsv(state.products), `dispensing-margin-${today()}.csv`, 'text/csv'));
     bindMaybe('[data-a="impjson"]', () => fjson.click());
     bindMaybe('[data-a="goig"]', () => { state.view = 'ig'; render(); });
-    bindMaybe('[data-a="expjson"]', () =>
-      download(JSON.stringify({ products: state.products, formulary: state.formulary, config: state.config, history: state.history }, null, 2), `dispensing-check-backup-${today()}.json`, 'application/json')
-    );
+    bindMaybe('[data-a="expjson"]', () => {
+      download(buildBackup(), `dispensing-check-backup-${today()}.json`, 'application/json');
+      localStorage.setItem(KEYS.lastExport, new Date().toISOString());
+    });
     fcsv.addEventListener('change', async (e) => {
       const f = e.target.files[0];
       if (!f) return;
       try {
         const parsed = E.parseCsv(await f.text());
         if (!parsed.length) { alert('No rows found. Expected columns: ' + E.CSV_HEADER); e.target.value = ''; return; }
-        if (state.products.length > 0 && !confirm(`Importing will replace your current data (${state.products.length} products). Continue?`)) { e.target.value = ''; return; }
+        if (state.products.length > 0) {
+          openMergeModal('csv', parsed, null);
+          e.target.value = '';
+          return;
+        }
         state.products = parsed;
         save(KEYS.products, state.products);
         state.view = 'ledger';
@@ -1505,15 +1903,17 @@
         const d = JSON.parse(await f.text());
         const incomingProducts = sanitiseProducts(d.products);
         const incomingFormulary = sanitiseFormulary(d.formulary);
+        const incomingHistory = Array.isArray(d.history) ? sanitiseHistory(d.history) : null;
         const wouldReplace = state.products.length > 0 || state.formulary.length > 0;
         if (wouldReplace) {
-          const n = state.products.length;
-          if (!confirm(`Importing will replace your current data (${n} products). Continue?`)) { e.target.value = ''; return; }
+          openMergeModal('json', incomingProducts, incomingFormulary, incomingHistory, d.config);
+          e.target.value = '';
+          return;
         }
         state.products = incomingProducts;
         state.formulary = incomingFormulary;
         if (d.config) state.config = mergeConfig(d.config);
-        if (Array.isArray(d.history)) state.history = sanitiseHistory(d.history);
+        if (incomingHistory) state.history = incomingHistory;
         save(KEYS.products, state.products);
         save(KEYS.formulary, state.formulary);
         save(KEYS.config, state.config);
@@ -1524,6 +1924,109 @@
         alert('Invalid backup file: ' + err.message);
       }
       e.target.value = '';
+    });
+  }
+
+  // ── Merge-on-import modal ──
+  // type: 'csv' | 'json'
+  // For CSV: incomingProducts only; for JSON: incomingProducts + incomingFormulary + incomingHistory + rawConfig
+  function openMergeModal(type, incomingProducts, incomingFormulary, incomingHistory, rawConfig) {
+    const existingProdCount = state.products.length;
+    const existingFormCount = state.formulary ? state.formulary.length : 0;
+
+    const desc = type === 'csv'
+      ? `<p class="note">The file contains ${esc(String(incomingProducts.length))} product rows. You already have ${esc(String(existingProdCount))} products on file.</p>`
+      : `<p class="note">The backup contains ${esc(String(incomingProducts.length))} products and ${esc(String((incomingFormulary || []).length))} formulary entries. You already have ${esc(String(existingProdCount))} products and ${esc(String(existingFormCount))} formulary entries.</p>`;
+
+    const mergeLabel = type === 'csv' ? 'Merge products (recommended)' : 'Merge (recommended)';
+    const mergeDesc = type === 'csv'
+      ? 'Add new products and update existing ones by name+pack. Leaves your other data untouched.'
+      : 'Add new products, formulary entries and history snapshots. Does not overwrite your settings or practice name.';
+
+    const bodyHtml = `
+      ${desc}
+      <div class="wizard-options" style="margin-top:14px">
+        <button class="wizard-option" data-merge="merge">
+          <span class="wizard-option-title">${esc(mergeLabel)}</span>
+          <span class="wizard-option-desc">${esc(mergeDesc)}</span>
+        </button>
+        <button class="wizard-option" data-merge="replace">
+          <span class="wizard-option-title">Replace everything</span>
+          <span class="wizard-option-desc">Overwrite all current data with the imported file. ${type === 'json' ? 'Settings and practice name will also be replaced.' : 'All existing products will be removed.'}</span>
+        </button>
+        <button class="wizard-option wizard-option-cancel" data-merge="cancel">
+          <span class="wizard-option-title">Cancel</span>
+          <span class="wizard-option-desc">Keep your current data unchanged.</span>
+        </button>
+      </div>`;
+
+    const host = openModal(type === 'csv' ? 'Import CSV — merge or replace?' : 'Import backup — merge or replace?', bodyHtml, () => false);
+
+    // Hide the default Save/Cancel buttons — we use the option buttons instead
+    const actionsEl = host.querySelector('.modal-actions');
+    if (actionsEl) actionsEl.style.display = 'none';
+
+    host.querySelectorAll('[data-merge]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const choice = btn.dataset.merge;
+        if (choice === 'cancel') {
+          host.remove();
+          return;
+        }
+
+        const prevProdCount = state.products.length;
+        const prevFormCount = (state.formulary || []).length;
+        const prevProdIds = new Set(state.products.map((p) => E.productKeyOf(p)));
+        const prevFormIds = new Set((state.formulary || []).map((f) => f.id));
+
+        if (choice === 'merge') {
+          if (type === 'csv') {
+            state.products = E.mergeProducts(state.products, incomingProducts);
+          } else {
+            state.products = E.mergeProducts(state.products, incomingProducts);
+            state.formulary = E.mergeFormulary(state.formulary || [], incomingFormulary || []);
+            if (incomingHistory) {
+              state.history = E.mergeHistory(state.history, incomingHistory, 36);
+            }
+            // Do NOT touch config/practiceName/pin on merge
+          }
+        } else {
+          // replace
+          state.products = incomingProducts;
+          if (type === 'json') {
+            state.formulary = incomingFormulary || [];
+            if (rawConfig) state.config = mergeConfig(rawConfig);
+            if (incomingHistory) state.history = incomingHistory;
+          }
+        }
+
+        save(KEYS.products, state.products);
+        save(KEYS.formulary, state.formulary);
+        if (type === 'json') {
+          save(KEYS.config, state.config);
+          save(KEYS.history, state.history);
+        }
+        state.view = 'data';
+        host.remove();
+        render();
+
+        // Show result message
+        if (choice === 'merge') {
+          const newProdCount = state.products.length;
+          const newFormCount = (state.formulary || []).length;
+          const newProds = type === 'csv'
+            ? state.products.filter((p) => !prevProdIds.has(E.productKeyOf(p))).length
+            : state.products.filter((p) => !prevProdIds.has(E.productKeyOf(p))).length;
+          const newForms = (state.formulary || []).filter((f) => !prevFormIds.has(f.id)).length;
+          const msg = type === 'csv'
+            ? `Merged: ${newProdCount} products (${newProds} new).`
+            : `Merged: ${newProdCount} products (${newProds} new), formulary ${newFormCount} (${newForms} new).`;
+          // Show inline on data view if result element exists, else alert
+          const resultEl = document.getElementById('mergeResult');
+          if (resultEl) resultEl.textContent = msg;
+          else alert(msg);
+        }
+      });
     });
   }
 
@@ -1789,6 +2292,12 @@
             <button class="accent-swatch" data-accent="amber" title="Amber" style="background:#f59e0b"></button>
           </div>
         </div>
+        <div class="btn-row" style="margin-top:10px">
+          <button class="btn" data-a="runwizard">Run setup guide</button>
+        </div>
+      </div></div>
+      <div class="panel"><h3>Backup</h3><div class="pad">
+        <div id="backupStatus">${buildBackupStatusHtml()}</div>
       </div></div>
       <div class="panel"><div class="pad">
         <label class="field"><span>Practice name (shown in headers / report)</span><input id="s_name" value="${esc(state.practiceName)}" placeholder="e.g. Greendale Surgery" /></label>
@@ -1830,6 +2339,14 @@
       });
     });
 
+    bindBackupButtons();
+
+    bindMaybe('[data-a="runwizard"]', () => {
+      localStorage.removeItem(KEYS.onboarded);
+      state.view = 'ledger';
+      render();
+    });
+
     const mode = $('#s_mode');
     mode.addEventListener('change', () => {
       $('#s_dd').style.display = mode.value === 'dispensingDoctor' ? '' : 'none';
@@ -1852,8 +2369,19 @@
       render();
     });
     bindMaybe('[data-a="clearall"]', () => {
-      if (!confirm('This permanently deletes all products, formulary entries, history and settings stored in this browser. Export a JSON backup first. Continue?')) return;
+      if (!confirm('This permanently deletes all products, formulary entries, history and settings stored in this browser, including the imported tariff dataset and the auto-backup link. Export a JSON backup first. Continue?')) return;
       Object.values(KEYS).forEach((k) => localStorage.removeItem(k));
+      if (_backup.timer) clearTimeout(_backup.timer);
+      _backup.timer = null;
+      _backup.handle = null;
+      _backup.status = 'idle';
+      if (_idb) {
+        _idb.close();
+        _idb = null;
+      }
+      if (window.indexedDB) {
+        try { window.indexedDB.deleteDatabase('dispensingCheck'); } catch (_) {}
+      }
       state.products = [];
       state.formulary = [];
       state.history = [];
@@ -2173,5 +2701,6 @@
     ];
   }
 
+  loadBackupHandle();
   render();
 })();

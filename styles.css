@@ -457,5 +457,72 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 html[data-accent='amber'] .btn-primary { color: #0f172a; }
 html[data-accent='amber'] .seg button.active { color: #0f172a; }
 
+/* ── First-run wizard option buttons ───────────────────────────────────── */
+.wizard-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wizard-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+  color: var(--text-1);
+  font-family: var(--sans);
+}
+.wizard-option:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
+.wizard-option-title {
+  font-weight: 650;
+  font-size: 0.93rem;
+}
+.wizard-option-desc {
+  font-size: 0.79rem;
+  color: var(--text-3);
+  line-height: 1.45;
+}
+.wizard-option-cancel {
+  opacity: 0.7;
+}
+.wizard-option-cancel:hover {
+  opacity: 1;
+  border-color: var(--stroke-hi);
+  background: var(--panel);
+}
+
+/* ── Backup nudge banner ────────────────────────────────────────────────── */
+.nudge-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: color-mix(in srgb, var(--amber) 12%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+  border-radius: 12px;
+  padding: 9px 14px;
+  margin-bottom: 14px;
+  font-size: 0.81rem;
+  color: var(--text-2);
+  flex-wrap: wrap;
+}
+.nudge-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 @media print { .topbar, .nav { display: none; } .content { max-width: none; } body { background: #fff; } }

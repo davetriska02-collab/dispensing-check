@@ -86,8 +86,14 @@ marks the supplier in use.
 
 - `localStorage` keys: `dc.products`, `dc.config`, `dc.formulary`, `dc.history`,
   `dc.role`, `dc.theme`, `dc.practiceName`, `dc.partnerPin`, `dc.textSize`,
-  `dc.density`, `dc.accent`, `dc.tariffMonth`, `dc.concessions`. The imported
-  Drug Tariff reference dataset lives in the `dispensingCheck` IndexedDB.
+  `dc.density`, `dc.accent`, `dc.tariffMonth`, `dc.concessions`,
+  `dc.onboarded`, `dc.lastBackupAt`, `dc.lastExport`, `dc.backupNudgeAt`.
+  The imported Drug Tariff dataset and the auto-backup file handle live in
+  the `dispensingCheck` IndexedDB.
+- **Auto-backup** (Chrome/Edge): pick a file once in **Settings → Backup**
+  and every change is written to it automatically. JSON/CSV imports offer
+  **Merge** (by id, then name + pack) or **Replace**. A first-run setup
+  guide appears on first launch and can be re-run from Settings.
 - Full JSON backup/restore and CSV import/export are in the **Import / export**
   tab. Imports that would replace existing data ask for confirmation first, and
   JSON backups are shape-validated on the way in.
@@ -115,5 +121,5 @@ browser DevTools.
 
 ## Status
 
-v1.1.0. Engine and importers are regression-tested (128 tests); the UI is
+v1.2.0. Engine and importers are regression-tested (161 tests); the UI is
 framework-free vanilla JS with zero dependencies and no build step.
