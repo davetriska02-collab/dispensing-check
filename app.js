@@ -12,6 +12,9 @@
     theme: 'dc.theme',
     practice: 'dc.practiceName',
     pin: 'dc.partnerPin',
+    textSize: 'dc.textSize',
+    density: 'dc.density',
+    accent: 'dc.accent',
   };
 
   const state = {
@@ -23,6 +26,7 @@
     practiceName: localStorage.getItem(KEYS.practice) || '',
     pin: localStorage.getItem(KEYS.pin) || '',
     view: 'ledger',
+    ledgerUI: { q: '', cat: 'all', flag: 'all', sort: null, dir: 1 },
   };
 
   function load(k, fallback) {
@@ -94,15 +98,30 @@
     }
   }
 
-  // ── theme & role ──
+  // ── theme & appearance ──
   function applyTheme() {
     const theme = localStorage.getItem(KEYS.theme) || 'dark';
     document.documentElement.setAttribute('data-theme', theme);
+  }
+  function applyAppearance() {
+    const ts = localStorage.getItem(KEYS.textSize) || 'md';
+    const dn = localStorage.getItem(KEYS.density) || 'comfortable';
+    const ac = localStorage.getItem(KEYS.accent) || 'indigo';
+    document.documentElement.setAttribute('data-textsize', ts);
+    document.documentElement.setAttribute('data-density', dn);
+    document.documentElement.setAttribute('data-accent', ac);
   }
   $('#themeBtn').addEventListener('click', () => {
     const cur = localStorage.getItem(KEYS.theme) || 'dark';
     localStorage.setItem(KEYS.theme, cur === 'dark' ? 'light' : 'dark');
     applyTheme();
+  });
+  const TEXT_SIZES = ['sm', 'md', 'lg', 'xl'];
+  $('#textBtn').addEventListener('click', () => {
+    const cur = localStorage.getItem(KEYS.textSize) || 'md';
+    const next = TEXT_SIZES[(TEXT_SIZES.indexOf(cur) + 1) % TEXT_SIZES.length];
+    localStorage.setItem(KEYS.textSize, next);
+    applyAppearance();
   });
 
   function setRole(role) {
@@ -155,6 +174,7 @@
 
   function render() {
     applyTheme();
+    applyAppearance();
     renderNav();
     if (state.role === 'prescriber') return renderPrescriber();
     if (state.view === 'formulary') return renderFormulary();
@@ -644,12 +664,173 @@
     return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2" fill="${stroke}"/></svg>`;
   }
 
+  // ── LEDGER helpers ──
+  function sortTh(label, key) {
+    const ui = state.ledgerUI;
+    const active = ui.sort === key;
+    const arrow = active ? (ui.dir === 1 ? ' ▲' : ' ▼') : '';
+    return `<th class="sortable-th${active ? ' sort-active' : ''}" data-sort="${key}">${label}${arrow}</th>`;
+  }
+
+  function applyLedgerFilter(metrics) {
+    const ui = state.ledgerUI;
+    let out = metrics;
+    if (ui.q) {
+      const q = ui.q.toLowerCase();
+      out = out.filter(({ p }) =>
+        p.name.toLowerCase().includes(q) ||
+        (p.suppliers || []).some((s) => s.name.toLowerCase().includes(q))
+      );
+    }
+    if (ui.cat !== 'all') out = out.filter(({ p }) => p.category === ui.cat);
+    if (ui.flag === 'loss') out = out.filter(({ m }) => m.lossMaker);
+    if (ui.flag === 'switch') out = out.filter(({ m }) => m.switchable);
+    if (ui.flag === 'unpriced') out = out.filter(({ m }) => m.currentCost == null);
+    return out;
+  }
+
+  function applyLedgerSort(metrics) {
+    const ui = state.ledgerUI;
+    if (!ui.sort) return metrics;
+    const nullLast = (a, b, getter) => {
+      const av = getter(a), bv = getter(b);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return (av - bv) * ui.dir;
+    };
+    const strSort = (a, b, getter) => {
+      const av = getter(a) || '', bv = getter(b) || '';
+      return av.localeCompare(bv) * ui.dir;
+    };
+    const sorted = metrics.slice();
+    if (ui.sort === 'name') sorted.sort((a, b) => strSort(a, b, (x) => x.p.name));
+    else if (ui.sort === 'tariff') sorted.sort((a, b) => nullLast(a, b, (x) => x.m.tariff));
+    else if (ui.sort === 'netReimb') sorted.sort((a, b) => nullLast(a, b, (x) => x.m.netReimb));
+    else if (ui.sort === 'buy') sorted.sort((a, b) => nullLast(a, b, (x) => x.m.currentCost));
+    else if (ui.sort === 'margin') sorted.sort((a, b) => nullLast(a, b, (x) => x.m.marginPerPackCurrent));
+    else if (ui.sort === 'packs') sorted.sort((a, b) => nullLast(a, b, (x) => x.m.monthlyPacks));
+    else if (ui.sort === 'profit') sorted.sort((a, b) => nullLast(a, b, (x) => x.m.monthlyProfitCurrent));
+    return sorted;
+  }
+
+  function ledgerToolbar(filtered, total) {
+    const ui = state.ledgerUI;
+    const isFiltered = ui.q !== '' || ui.cat !== 'all' || ui.flag !== 'all';
+    const countNote = isFiltered ? `<span class="toolbar-count">${filtered} of ${total} lines</span>` : '';
+    const clearBtn = isFiltered ? `<button class="btn" id="tb_clear" style="font-size:0.71rem">Clear</button>` : '';
+    return `<div class="ledger-toolbar">
+      <input id="tb_q" class="tb-search" placeholder="Search product or supplier…" value="${esc(ui.q)}" />
+      <select id="tb_cat">
+        <option value="all">All categories</option>
+        ${E.CATEGORIES.map((c) => `<option value="${c.id}" ${ui.cat === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
+      </select>
+      <select id="tb_flag">
+        <option value="all">All status</option>
+        <option value="loss" ${ui.flag === 'loss' ? 'selected' : ''}>Loss-making</option>
+        <option value="switch" ${ui.flag === 'switch' ? 'selected' : ''}>Switchable</option>
+        <option value="unpriced" ${ui.flag === 'unpriced' ? 'selected' : ''}>Unpriced</option>
+      </select>
+      ${clearBtn}
+      ${countNote}
+      ${isFiltered ? `<span class="toolbar-note">totals above include all lines</span>` : ''}
+    </div>`;
+  }
+
+  function rebuildLedgerTable() {
+    const allMetrics = state.products.map((p) => ({ p, m: E.productMetrics(p, state.config) }));
+    const filtered = applyLedgerFilter(allMetrics);
+    const sorted = applyLedgerSort(filtered);
+
+    // Update toolbar count/note
+    const toolbarEl = content.querySelector('.ledger-toolbar');
+    if (toolbarEl) {
+      const ui = state.ledgerUI;
+      const isFiltered = ui.q !== '' || ui.cat !== 'all' || ui.flag !== 'all';
+      let countEl = toolbarEl.querySelector('.toolbar-count');
+      if (isFiltered) {
+        if (!countEl) {
+          countEl = document.createElement('span');
+          countEl.className = 'toolbar-count';
+          toolbarEl.appendChild(countEl);
+        }
+        countEl.textContent = `${filtered.length} of ${allMetrics.length} lines`;
+      } else if (countEl) {
+        countEl.remove();
+      }
+      let noteEl = toolbarEl.querySelector('.toolbar-note');
+      if (isFiltered) {
+        if (!noteEl) {
+          noteEl = document.createElement('span');
+          noteEl.className = 'toolbar-note';
+          toolbarEl.appendChild(noteEl);
+          noteEl.textContent = 'totals above include all lines';
+        }
+      } else if (noteEl) {
+        noteEl.remove();
+      }
+      let clearEl = toolbarEl.querySelector('#tb_clear');
+      if (isFiltered && !clearEl) {
+        clearEl = document.createElement('button');
+        clearEl.className = 'btn';
+        clearEl.id = 'tb_clear';
+        clearEl.style.fontSize = '0.71rem';
+        clearEl.textContent = 'Clear';
+        toolbarEl.insertBefore(clearEl, toolbarEl.querySelector('.toolbar-count') || toolbarEl.firstChild);
+        clearEl.addEventListener('click', () => {
+          state.ledgerUI.q = ''; state.ledgerUI.cat = 'all'; state.ledgerUI.flag = 'all';
+          const qEl = content.querySelector('#tb_q');
+          if (qEl) qEl.value = '';
+          const catEl = content.querySelector('#tb_cat');
+          if (catEl) catEl.value = 'all';
+          const flagEl = content.querySelector('#tb_flag');
+          if (flagEl) flagEl.value = 'all';
+          rebuildLedgerTable();
+        });
+      } else if (!isFiltered && clearEl) {
+        clearEl.remove();
+      }
+    }
+
+    // Rebuild table
+    const tableWrap = content.querySelector('.ledger-table-wrap');
+    if (tableWrap) {
+      tableWrap.innerHTML = `<div style="overflow-x:auto">${ledgerTable(sorted)}</div>`;
+      tableWrap.querySelectorAll('.sortable-th').forEach((th) => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.sort;
+          const ui = state.ledgerUI;
+          if (ui.sort === key) {
+            if (ui.dir === 1) ui.dir = -1;
+            else { ui.sort = null; ui.dir = 1; }
+          } else {
+            ui.sort = key; ui.dir = 1;
+          }
+          rebuildLedgerTable();
+        });
+      });
+      tableWrap.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => editProduct(b.dataset.edit)));
+      tableWrap.querySelectorAll('[data-del]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const p = state.products.find((x) => x.id === b.dataset.del);
+          if (p && confirm(`Delete "${p.name || 'this product'}"?`)) {
+            state.products = state.products.filter((x) => x.id !== b.dataset.del);
+            save(KEYS.products, state.products);
+            render();
+          }
+        })
+      );
+    }
+  }
+
   // ── LEDGER (partner) ──
   function renderLedger() {
     recordSnapshot();
     const t = E.practiceTotals(state.products, state.config);
     const rate = state.config.mode === 'dispensingDoctor' ? `Dispensing doctor · ${state.config.ddRate}% flat clawback` : 'Pharmacy group rates';
-    const metrics = state.products.map((p) => ({ p, m: E.productMetrics(p, state.config) }));
+    const allMetrics = state.products.map((p) => ({ p, m: E.productMetrics(p, state.config) }));
+    const filtered = applyLedgerFilter(allMetrics);
+    const sorted = applyLedgerSort(filtered);
     const bd = E.categoryBreakdown(state.products, state.config);
 
     content.innerHTML = `
@@ -662,7 +843,10 @@
         ${state.products.length ? '' : '<button class="btn" data-a="sample">Load worked example</button>'}
       </div>
       ${cards(t)}
-      ${state.products.length === 0 ? emptyLedger() : `<div class="panel"><div style="overflow-x:auto">${ledgerTable(metrics)}</div></div>`}
+      ${state.products.length === 0 ? emptyLedger() : `
+        ${ledgerToolbar(filtered.length, allMetrics.length)}
+        <div class="panel ledger-table-wrap"><div style="overflow-x:auto">${ledgerTable(sorted)}</div></div>
+      `}
       ${breakdownPanel(bd)}
       ${opportunities(t)}`;
 
@@ -670,17 +854,56 @@
     bindAll('[data-a="switchall"]', () => switchAll());
     bindAll('[data-a="print"]', () => printReport());
     bindAll('[data-a="sample"]', loadSample);
-    content.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => editProduct(b.dataset.edit)));
-    content.querySelectorAll('[data-del]').forEach((b) =>
-      b.addEventListener('click', () => {
-        const p = state.products.find((x) => x.id === b.dataset.del);
-        if (p && confirm(`Delete "${p.name || 'this product'}"?`)) {
-          state.products = state.products.filter((x) => x.id !== b.dataset.del);
-          save(KEYS.products, state.products);
-          render();
-        }
-      })
-    );
+
+    if (state.products.length > 0) {
+      const qEl = content.querySelector('#tb_q');
+      qEl.addEventListener('input', (e) => {
+        state.ledgerUI.q = e.target.value;
+        rebuildLedgerTable();
+      });
+      content.querySelector('#tb_cat').addEventListener('change', (e) => {
+        state.ledgerUI.cat = e.target.value;
+        rebuildLedgerTable();
+      });
+      content.querySelector('#tb_flag').addEventListener('change', (e) => {
+        state.ledgerUI.flag = e.target.value;
+        rebuildLedgerTable();
+      });
+      const clearEl = content.querySelector('#tb_clear');
+      if (clearEl) {
+        clearEl.addEventListener('click', () => {
+          state.ledgerUI.q = ''; state.ledgerUI.cat = 'all'; state.ledgerUI.flag = 'all';
+          content.querySelector('#tb_q').value = '';
+          content.querySelector('#tb_cat').value = 'all';
+          content.querySelector('#tb_flag').value = 'all';
+          rebuildLedgerTable();
+        });
+      }
+      content.querySelectorAll('.sortable-th').forEach((th) => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.sort;
+          const ui = state.ledgerUI;
+          if (ui.sort === key) {
+            if (ui.dir === 1) ui.dir = -1;
+            else { ui.sort = null; ui.dir = 1; }
+          } else {
+            ui.sort = key; ui.dir = 1;
+          }
+          rebuildLedgerTable();
+        });
+      });
+      content.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => editProduct(b.dataset.edit)));
+      content.querySelectorAll('[data-del]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const p = state.products.find((x) => x.id === b.dataset.del);
+          if (p && confirm(`Delete "${p.name || 'this product'}"?`)) {
+            state.products = state.products.filter((x) => x.id !== b.dataset.del);
+            save(KEYS.products, state.products);
+            render();
+          }
+        })
+      );
+    }
   }
   function bindAll(sel, fn) {
     content.querySelectorAll(sel).forEach((el) => el.addEventListener('click', fn));
@@ -733,7 +956,7 @@
         </tr>`;
       })
       .join('');
-    return `<table><thead><tr><th>Product</th><th>Tariff</th><th>Net reimb.</th><th>Buy</th><th>Margin/pack</th><th>Packs/mo</th><th>Profit/mo</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    return `<table><thead><tr>${sortTh('Product','name')}${sortTh('Tariff','tariff')}${sortTh('Net reimb.','netReimb')}${sortTh('Buy','buy')}${sortTh('Margin/pack','margin')}${sortTh('Packs/mo','packs')}${sortTh('Profit/mo','profit')}<th></th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   function breakdownPanel(bd) {
@@ -1085,6 +1308,39 @@
     content.innerHTML = `
       <h1>Settings</h1>
       <p class="sub">Clawback model, margin thresholds, practice identity and the prescriber-view PIN</p>
+      <div class="panel"><h3>Appearance</h3><div class="pad">
+        <div class="field-row">
+          <label class="field"><span>Text size</span>
+            <select id="s_textsize">
+              <option value="sm">Small</option>
+              <option value="md">Medium</option>
+              <option value="lg">Large</option>
+              <option value="xl">Extra large</option>
+            </select>
+          </label>
+          <label class="field"><span>Density</span>
+            <select id="s_density">
+              <option value="comfortable">Comfortable</option>
+              <option value="compact">Compact</option>
+            </select>
+          </label>
+          <label class="field"><span>Theme</span>
+            <select id="s_theme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
+        </div>
+        <div class="field">
+          <span>Accent colour</span>
+          <div class="accent-swatches" id="s_accent">
+            <button class="accent-swatch" data-accent="indigo" title="Indigo (default)" style="background:#5b8cff"></button>
+            <button class="accent-swatch" data-accent="teal" title="Teal" style="background:#2dd4bf"></button>
+            <button class="accent-swatch" data-accent="violet" title="Violet" style="background:#8b5cf6"></button>
+            <button class="accent-swatch" data-accent="amber" title="Amber" style="background:#f59e0b"></button>
+          </div>
+        </div>
+      </div></div>
       <div class="panel"><div class="pad">
         <label class="field"><span>Practice name (shown in headers / report)</span><input id="s_name" value="${esc(state.practiceName)}" placeholder="e.g. Greendale Surgery" /></label>
         <label class="field"><span>Clawback model</span><select id="s_mode"><option value="dispensingDoctor" ${c.mode === 'dispensingDoctor' ? 'selected' : ''}>Dispensing doctor — flat rate</option><option value="pharmacyGroups" ${c.mode === 'pharmacyGroups' ? 'selected' : ''}>Pharmacy group rates</option></select></label>
@@ -1094,7 +1350,37 @@
         <label class="field"><span>Prescriber-view PIN (optional — gates entry to the partner view)</span><input id="s_pin" value="${esc(state.pin)}" placeholder="leave blank for no PIN" /></label>
         <div class="btn-row"><button class="btn btn-primary" data-a="save">Save</button><button class="btn" data-a="reset">Reset rates</button></div>
         <p class="note">The PIN is a soft gate for shared workstations, not strong security — it keeps prices out of the prescriber view by default.</p>
-      </div></div>`;
+      </div></div>
+      <div class="panel" style="border-color:color-mix(in srgb, var(--red) 40%, transparent)">
+        <h3 style="color:var(--red)">Danger zone</h3>
+        <div class="pad">
+          <p class="note">Permanently removes all products, formulary entries, history and settings stored in this browser.</p>
+          <button class="btn btn-danger" data-a="clearall">Clear all data…</button>
+        </div>
+      </div>`;
+
+    const tsEl = $('#s_textsize');
+    tsEl.value = localStorage.getItem(KEYS.textSize) || 'md';
+    tsEl.addEventListener('change', () => { localStorage.setItem(KEYS.textSize, tsEl.value); applyAppearance(); });
+
+    const dnEl = $('#s_density');
+    dnEl.value = localStorage.getItem(KEYS.density) || 'comfortable';
+    dnEl.addEventListener('change', () => { localStorage.setItem(KEYS.density, dnEl.value); applyAppearance(); });
+
+    const thEl = $('#s_theme');
+    thEl.value = localStorage.getItem(KEYS.theme) || 'dark';
+    thEl.addEventListener('change', () => { localStorage.setItem(KEYS.theme, thEl.value); applyTheme(); });
+
+    const curAccent = localStorage.getItem(KEYS.accent) || 'indigo';
+    content.querySelectorAll('.accent-swatch').forEach((b) => {
+      b.classList.toggle('accent-swatch-active', b.dataset.accent === curAccent);
+      b.addEventListener('click', () => {
+        localStorage.setItem(KEYS.accent, b.dataset.accent);
+        applyAppearance();
+        content.querySelectorAll('.accent-swatch').forEach((x) => x.classList.toggle('accent-swatch-active', x.dataset.accent === b.dataset.accent));
+      });
+    });
+
     const mode = $('#s_mode');
     mode.addEventListener('change', () => {
       $('#s_dd').style.display = mode.value === 'dispensingDoctor' ? '' : 'none';
@@ -1114,6 +1400,19 @@
     bindMaybe('[data-a="reset"]', () => {
       state.config = mergeConfig(null);
       save(KEYS.config, state.config);
+      render();
+    });
+    bindMaybe('[data-a="clearall"]', () => {
+      if (!confirm('This permanently deletes all products, formulary entries, history and settings stored in this browser. Export a JSON backup first. Continue?')) return;
+      Object.values(KEYS).forEach((k) => localStorage.removeItem(k));
+      state.products = [];
+      state.formulary = [];
+      state.history = [];
+      state.config = mergeConfig(null);
+      state.practiceName = '';
+      state.pin = '';
+      state.ledgerUI = { q: '', cat: 'all', flag: 'all', sort: null, dir: 1 };
+      state.view = 'ledger';
       render();
     });
   }

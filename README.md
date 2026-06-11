@@ -10,13 +10,23 @@ alternative to RxMargin. It does two jobs from one shared dataset:
    finds the cheapest supplier on file, flags loss-making lines, and totals the
    cash freed by switching — with a category breakdown, RAG margin-health bands,
    cost-per-unit comparison, a margin trend sparkline, a one-click "switch all to
-   cheapest supplier" action, and a printable board report.
+   cheapest supplier" action, search / category / status filters, sortable
+   columns, and a printable board report.
 
-2. **Prescriber view (price-blind formulary).** Every prescriber sees the agreed
+2. **Insights (visual dashboard).** Hand-rolled, dependency-free SVG charts:
+   a margin trend area chart built from monthly snapshots, profit-by-category
+   bars, top earners & drains, the biggest supplier-switch opportunities, and a
+   monthly spend-mix donut. All charts follow the active theme and accent.
+
+3. **Prescriber view (price-blind formulary).** Every prescriber sees the agreed
    **preferred line** + **clinically-equivalent alternative** per therapeutic
    choice, with doses, **at the point of prescribing** — and **never any cost,
    margin or supplier**. Commercial data stays with the partners. A soft PIN gates
    entry to the partner view on shared workstations.
+
+The UI is configurable per workstation: light/dark theme, four text sizes (also
+cycled by the topbar **aA** button), comfortable/compact density, and four accent
+colours — all under **Settings → Appearance**, persisted locally.
 
 All prices are entered or CSV-imported by the practice. **No live Drug Tariff or
 wholesaler price feeds are bundled** (those are licensed) — the money maths runs
@@ -66,8 +76,14 @@ marks the supplier in use.
 ## Data & safety
 
 - `localStorage` keys: `dc.products`, `dc.config`, `dc.formulary`, `dc.history`,
-  `dc.role`, `dc.theme`, `dc.practiceName`, `dc.partnerPin`.
-- Full JSON backup/restore and CSV import/export are in the **Import / export** tab.
+  `dc.role`, `dc.theme`, `dc.practiceName`, `dc.partnerPin`, `dc.textSize`,
+  `dc.density`, `dc.accent`.
+- Full JSON backup/restore and CSV import/export are in the **Import / export**
+  tab. Imports that would replace existing data ask for confirmation first, and
+  JSON backups are shape-validated on the way in.
+- CSV export guards all cells (including numeric ones) against spreadsheet
+  formula injection; the guard is stripped losslessly on re-import.
+- **Settings → Danger zone** clears every `dc.*` key after a strong confirmation.
 - The prescriber PIN is a soft gate for shared workstations, **not** strong
   security; the price-blindness is enforced by projecting the formulary through
   `prescriberFormulary()`, which strips every commercial field before render.
@@ -76,5 +92,5 @@ marks the supplier in use.
 
 ## Status
 
-Standalone scaffold (v0.1.0). Engine is regression-tested; the UI is framework-free
-vanilla JS. Intended to be mounted into its own repository.
+v1.0.0. Engine is regression-tested (51 tests); the UI is framework-free
+vanilla JS with zero dependencies and no build step.
